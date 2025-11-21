@@ -14,8 +14,6 @@
 #include <iostream>
 #include <memory>
 
-#include "/home/ue-5g/oai/common/utils/LOG/log.h"
-
 using namespace uhd;
 using namespace uhd::usrp;
 using namespace uhd::transport;
