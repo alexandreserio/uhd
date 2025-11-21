@@ -13,6 +13,10 @@
 #include <uhd/utils/byteswap.hpp>
 #include <uhd/utils/log.hpp>
 
+#include <stdio.h> //added [ALEX]
+#include <time.h>  //added [ALEX]
+#include <stdbool.h> //added [ALEX]
+
 namespace uhd { namespace usrp {
 
 template <typename to_host_type>
@@ -45,6 +49,26 @@ void load_metadata_from_buff(const to_host_type& to_host,
 
 UHD_INLINE void standard_async_msg_prints(const async_metadata_t& metadata)
 {
+    static bool printed = false;
+    time_t now;
+    struct tm *tm_info;
+    char time_buffer[50];
+    FILE *file;
+
+    if(printed == false){
+        time(&now); //get current time
+        tm_info = localtime(&now); //Convert time to local time structure
+        strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
+        file = fopen("/home/gnb/oai/async_log_error.md","a");
+        if(file == NULL){
+            UHD_LOG_FASTPATH("Failed to open log file for async messages.");
+        return;
+        }
+        fprintf(file, "Async message received: %s\nTime = [%s]\n", metadata.to_pp_string(true).c_str(), time_buffer);
+        fclose(file);
+        printed = true;
+    }
+
     if (metadata.event_code
         & (async_metadata_t::EVENT_CODE_UNDERFLOW
             | async_metadata_t::EVENT_CODE_UNDERFLOW_IN_PACKET)) {

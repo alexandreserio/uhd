@@ -14,6 +14,8 @@
 #include <iostream>
 #include <memory>
 
+#include "/home/ue-5g/oai/common/utils/LOG/log.h"
+
 using namespace uhd;
 using namespace uhd::usrp;
 using namespace uhd::transport;
@@ -155,6 +157,7 @@ public:
             metadata.has_time_spec = true;
             metadata.time_spec     = this->time_now();
             metadata.event_code    = async_metadata_t::EVENT_CODE_TIME_ERROR;
+            
             _async_msg_queue.push_with_pop_on_full(metadata);
             return;
         }
