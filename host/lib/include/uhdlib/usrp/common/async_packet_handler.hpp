@@ -61,9 +61,9 @@ UHD_INLINE void standard_async_msg_prints(const async_metadata_t& metadata)
             time(&now); //get current time
             tm_info = localtime(&now); //Convert time to local time structure
             strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
-            file = fopen("~/oai/async_log_error.md","a");
+            file = fopen("~/oai/oai_errors_log_file.log","a");
             if(file == NULL){
-                UHD_LOG_FASTPATH("\e[0;36m Failed to open log file for async messages.\e[0m");
+                UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
                 printed = true;
                 return;
             }
@@ -79,9 +79,9 @@ UHD_INLINE void standard_async_msg_prints(const async_metadata_t& metadata)
             time(&now); //get current time
             tm_info = localtime(&now); //Convert time to local time structure
             strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
-            file = fopen("~/oai/async_log_error.md","a");
+            file = fopen("~/oai/oai_errors_log_file.log","a");
             if(file == NULL){
-                UHD_LOG_FASTPATH("\e[0;36m Failed to open log file for async messages.\e[0m");
+                UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
                 printed = true;
                 return;
             }
