@@ -15,6 +15,13 @@
 #include <numeric>
 #include <tuple>
 
+#include <stdio.h> //added [ALEX]
+#include <time.h> //added [ALEX]
+#include <stdbool.h> //added [ALEX]
+#include <pwd.h> //added [ALEX]
+#include <string.h> //added [ALEX]
+#include <stdlib.h> //added [ALEX]
+
 using namespace uhd::rfnoc;
 
 const std::string radio_control::ALL_LOS   = "all";
@@ -1201,9 +1208,15 @@ bool radio_control_impl::async_message_validator(
     return false;
 }
 
-void radio_control_impl::async_message_handler(
-    uint32_t addr, const std::vector<uint32_t>& data, boost::optional<uint64_t> timestamp)
+bool printed = false; //ADDED
+FILE *oailogfile; //ADDED
+const char* oai_log_path = "/home/oai_errors_log_file.log";
+
+void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<uint32_t>& data, boost::optional<uint64_t> timestamp)
 {
+    time_t now;
+    struct tm *tm_info;
+    char time_buffer[50];
     if (data.empty()) {
         RFNOC_LOG_WARNING(
             str(boost::format("Received async message with invalid length %d!")
@@ -1248,16 +1261,42 @@ void radio_control_impl::async_message_handler(
                         uhd::async_metadata_t::EVENT_CODE_UNDERFLOW, timestamp);
                     post_action(res_source_info{res_source_info::INPUT_EDGE, chan},
                         tx_event_action);
-                    UHD_LOG_FASTPATH("U");
+                    UHD_LOG_FASTPATH("U_Tx");
+                    if(printed == false){
+                        time(&now); //get current time
+                        tm_info = localtime(&now); //Convert time to local time structure
+                        strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
+                        oailogfile = fopen(oai_log_path,"a");
+                        if(oailogfile == NULL){
+                            UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
+                            printed = true;
+                            return;
+                        }
+                        fprintf(oailogfile, "Async message received (U): Time = [%s]\n", time_buffer);
+                        fclose(oailogfile);
+                        printed = true;
+                    }
                     RFNOC_LOG_TRACE("Posting underrun event action message.");
                     break;
                 }
                 case err_codes::ERR_TX_LATE_DATA: {
-                    auto tx_event_action = tx_event_action_info::make(
-                        uhd::async_metadata_t::EVENT_CODE_TIME_ERROR, timestamp);
-                    post_action(res_source_info{res_source_info::INPUT_EDGE, chan},
-                        tx_event_action);
-                    UHD_LOG_FASTPATH("L");
+                    auto tx_event_action = tx_event_action_info::make(uhd::async_metadata_t::EVENT_CODE_TIME_ERROR, timestamp);
+                    post_action(res_source_info{res_source_info::INPUT_EDGE, chan},tx_event_action);
+                    UHD_LOG_FASTPATH("L_Tx");
+                    if(printed == false){
+                        time(&now); //get current time
+                        tm_info = localtime(&now); //Convert time to local time structure
+                        strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
+                        oailogfile = fopen(oai_log_path,"a");
+                        if(oailogfile == NULL){
+                            UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
+                            printed = true;
+                            return;
+                        }
+                        fprintf(oailogfile, "Async message received (L): Time = [%s]\n", time_buffer);
+                        fclose(oailogfile);
+                        printed = true;
+                    }
                     RFNOC_LOG_TRACE("Posting late data event action message.");
                     break;
                 }
@@ -1280,7 +1319,7 @@ void radio_control_impl::async_message_handler(
             }
             switch (code) {
                 case err_codes::ERR_RX_OVERRUN: {
-                    UHD_LOG_FASTPATH("O");
+                    UHD_LOG_FASTPATH("O_Rx");
                     auto rx_event_action = rx_event_action_info::make(
                         uhd::rx_metadata_t::ERROR_CODE_OVERFLOW);
                     const bool cont_mode = _last_stream_cmd.at(chan).stream_mode
@@ -1292,7 +1331,7 @@ void radio_control_impl::async_message_handler(
                     break;
                 }
                 case err_codes::ERR_RX_LATE_CMD:
-                    UHD_LOG_FASTPATH("L");
+                    UHD_LOG_FASTPATH("L_Rx");
                     auto rx_event_action = rx_event_action_info::make(
                         uhd::rx_metadata_t::ERROR_CODE_LATE_COMMAND);
                     RFNOC_LOG_TRACE("Posting RX late command message.");
