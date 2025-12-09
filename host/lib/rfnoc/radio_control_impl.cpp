@@ -22,6 +22,17 @@
 #include <string.h> //added [ALEX]
 #include <stdlib.h> //added [ALEX]
 
+// Socket includes
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#define PORT 8100
+// #include "/home/ue-5g/oai/openairinterface5g/common/utils/assertions.h"
+static int flag = 0;
+// Socket includes end
+
 using namespace uhd::rfnoc;
 
 const std::string radio_control::ALL_LOS   = "all";
@@ -1298,6 +1309,42 @@ void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<
                         printed = true;
                     }
                     RFNOC_LOG_TRACE("Posting late data event action message.");
+                    
+                    // Socket code start
+                    // if(flag == 0){
+                    //     int status, valread, client_fd;
+                    //     struct sockaddr_in serv_addr;
+                    //     if((client_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+                    //         printf("Socket failed: %s\n", strerror(errno));
+                    //         return;
+                    //     }
+                        
+                    //     serv_addr.sin_family = AF_INET;
+                    //     serv_addr.sin_port = htons(PORT);
+
+                    //     // Convert IPv4 and IPv6 addresses from text to binary form
+                    //     if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0){
+                    //         printf("nInvalid address/ Address not supported \n");
+                    //         return;
+                    //     }
+
+                    //     if((status = connect(client_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))) < 0){
+                    //         printf("\nConnection Failed \n");
+                    //         return;
+                    //     }
+
+                    //     char *msg = "Late Packets";
+                    //     send(client_fd, msg, strlen(msg), 0);
+
+                    //     close(client_fd);
+                    //     flag = 1;
+                    //     abort();
+                    // }
+                    // if(flag == 1){
+                    //     sleep(2);
+                    // }
+                    // Socket code end
+
                     break;
                 }
                 case err_codes::EVENT_TX_BURST_ACK: {
