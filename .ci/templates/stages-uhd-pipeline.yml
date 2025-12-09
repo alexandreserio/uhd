@@ -51,6 +51,9 @@ parameters:
 - name: build_x4xx
   type: boolean
   default: true
+- name: cmake_args
+  type: string
+  default: " "
 - name: fpga_imgs_source
   type: string
   displayName: FPGA Images Source
@@ -142,8 +145,8 @@ parameters:
       image_core: x440_CG_400_rfnoc_image_core.yml
       image_core_name: usrp_x440_fpga_CG_400
       artifact_name: X440_CG_400
-      timeout: 720
-      attempt_timeout: 360
+      timeout: 1080
+      attempt_timeout: 540 # successfull runs can take longer than default 6h
       max_attempts: 2
     X440_X4_1600:
       image_core: x440_X4_1600_rfnoc_image_core.yml
@@ -156,8 +159,8 @@ parameters:
       image_core: x440_X4_400_rfnoc_image_core.yml
       image_core_name: usrp_x440_fpga_X4_400
       artifact_name: X440_X4_400
-      timeout: 720
-      attempt_timeout: 360
+      timeout: 1080
+      attempt_timeout: 540 # successfull runs can take longer than default 6h
       max_attempts: 2
     X440_X4_200:
       image_core: x440_X4_200_rfnoc_image_core.yml
@@ -280,17 +283,21 @@ stages:
   - template: job-uhd-build-src.yml
     parameters:
       toolset: make
+      cmake_args: ${{ parameters.cmake_args }}
   - template: job-uhd-build-src.yml
     parameters:
       toolset: make_trace
+      cmake_args: ${{ parameters.cmake_args }}
   - template: job-uhd-build-src.yml
     parameters:
       toolset: ninja
+      cmake_args: ${{ parameters.cmake_args }}
   - ${{ if parameters.custom_boost_version }}:
     - template: job-uhd-build-src.yml
       parameters:
         toolset: make_custom_boost_version
         custom_boost_version_url: ${{ parameters.custom_boost_version_url }}
+        cmake_args: ${{ parameters.cmake_args }}
 
 - stage: build_rfnoc_modtool_stage_linux
   displayName: Build and Test RFNoC Modtool
@@ -468,6 +475,7 @@ stages:
       parameters:
         toolset: ubuntu_deb
         installer: deb
+        cmake_args: ${{ parameters.cmake_args }}
 
 - stage: build_uhd_installer_stage_fedora
   displayName: Build UHD Installers Fedora
@@ -478,6 +486,7 @@ stages:
       parameters:
         toolset: fedora_rpm
         installer: rpm
+        cmake_args: ${{ parameters.cmake_args }}
         releaseBinaries: ${{ parameters.release_binaries }}
 
 - stage: build_uhd_installer_stage_win
@@ -496,6 +505,7 @@ stages:
       parameters:
         toolset: msbuild
         installer: nsis
+        cmake_args: ${{ parameters.cmake_args }}
         releaseBinaries: ${{ parameters.release_binaries }}
         ${{ if contains(parameters.fpga_imgs_source, 'files.ettus.com') }}:
           fpga_imgs_source: 'files.ettus.com'
@@ -522,6 +532,11 @@ stages:
     )
   jobs:
   - template: ../fpga/templates/job-run-testbenches.yml
+    parameters:
+      simulator: modelsim
+  - template: ../fpga/templates/job-run-testbenches.yml
+    parameters:
+      simulator: xsim
 
 ### END: Testbenches stage
 
@@ -617,7 +632,7 @@ stages:
     parameters:
       uhdSrcDir: $(Build.SourcesDirectory)
       fpga_imgs_source: ${{ parameters.fpga_imgs_source }}
-      testDevices: 'b2xx'
+      testDevices: 'x3xx,b2xx'
 
 - stage: devtest_uhd_n3xx_e320_stage
   displayName: Dev Test UHD n3xx e320
@@ -856,9 +871,11 @@ stages:
   displayName: Test LabVIEW USRP Examples
   dependsOn:
   - analyze_changeset
+  - build_uhd_embedded_system_images
   - build_uhd_installer_stage_win
+  - provide_x410_fpga_images_stage
   jobs:
   - template: job-uhd-usrp-tests-uhdlvtest.yml
     parameters:
-      uhdSrcDir: $(Build.SourcesDirectory)
+      uhdSrcDir: $(Build.SourcesDirectory)/uhddev
       fpga_imgs_source: ${{ parameters.fpga_imgs_source }}
