@@ -36,9 +36,9 @@
 #include <uhdlib/usrp/cores/user_settings_core_3000.hpp>
 #include <uhdlib/usrp/gps_ctrl.hpp>
 #include <unordered_map>
-#include <boost/assign.hpp>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 static const uint8_t B200_FW_COMPAT_NUM_MAJOR = 8;
 static const uint8_t B200_FW_COMPAT_NUM_MINOR = 0;
@@ -122,11 +122,12 @@ public:
     uhd::tx_streamer::sptr get_tx_stream(const uhd::stream_args_t& args) override;
     bool recv_async_msg(uhd::async_metadata_t&, double) override;
 
-    //! Check that the combination of stream args and tick rate are valid.
-    //
-    // Basically figures out the arguments for enforce_tick_rate_limits()
-    // and calls said method. If arguments are invalid, throws a
-    // uhd::value_error.
+    /*! \brief Check that the combination of stream args and tick rate are valid.
+     *
+     * Basically figures out the arguments for enforce_tick_rate_limits()
+     * and calls said method. If arguments are invalid, throws a
+     * uhd::value_error.
+     */
     void check_streamer_args(const uhd::stream_args_t& args,
         double tick_rate,
         const std::string& direction = "");
@@ -137,8 +138,9 @@ private:
     b200_product_t _product;
     size_t _revision;
     bool _gpsdo_capable;
-    //! This flag is true if the FPGA has custom (user) registers and access to
-    // those needs to be enabled from software.
+    /*! This flag is true if the FPGA has custom (user) registers and access to
+     * those needs to be enabled from software.
+     */
     const bool _enable_user_regs;
 
     // controllers
@@ -171,7 +173,7 @@ private:
         b200_uart::sptr gpsdo_uart;
     };
     std::shared_ptr<AsyncTaskData> _async_task_data;
-    boost::optional<uhd::msg_task::msg_type_t> handle_async_task(
+    std::optional<uhd::msg_task::msg_type_t> handle_async_task(
         uhd::transport::zero_copy_if::sptr, std::shared_ptr<AsyncTaskData>);
 
     void register_loopback_self_test(uhd::wb_iface::sptr iface);

@@ -13,8 +13,8 @@ set(UHD_GCC_MIN_VERSION             "7.3.0"   )
 set(UHD_CLANG_MIN_VERSION           "6.0.0"   )
 set(UHD_APPLECLANG_MIN_VERSION      "800"     )
 # Make sure to update the next two in unison:
-set(UHD_MSVC_MIN_VERSION            "1910"    )
-set(UHD_MSVC_MIN_VERSION_READABLE   "15.0"    )
+set(UHD_MSVC_MIN_VERSION            "1920"    )
+set(UHD_MSVC_MIN_VERSION_READABLE   "16.0"    )
 # This Python version gets used for Python API (if requested) as well as
 # all the build-time Python scripts
 set(UHD_PYTHON_MIN_VERSION          "3.7"     )
@@ -26,3 +26,7 @@ set(UHD_RUAMEL_YAML_MIN_VERSION     "0.15"    )
 set(UHD_PY_MAKO_MIN_VERSION         "0.4.2"   )
 set(UHD_PY_REQUESTS_MIN_VERSION     "2.0"     )
 set(UHD_PYBIND11_MIN_VERSION        "2.7"     )
+# gRPC/Protobuf: The floor is the minimum version shipped
+# the oldest validated distribution (Ubuntu 22.04 / jammy).
+set(UHD_GRPC_MIN_VERSION            "1.30"    )
+set(UHD_PROTOBUF_MIN_VERSION        "3.12"    )

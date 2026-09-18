@@ -10,11 +10,13 @@
 #include <uhdlib/rfnoc/chdr_packet_writer.hpp>
 #include <uhdlib/rfnoc/ctrlport_endpoint.hpp>
 #include <condition_variable>
-#include <boost/optional.hpp>
+#include <boost/format.hpp>
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 
 using namespace uhd;
@@ -33,7 +35,22 @@ constexpr double DEFAULT_TIMEOUT = 1.0;
 constexpr double MASSIVE_TIMEOUT = 10.0;
 //! Default value for whether ACKs are always required
 constexpr bool DEFAULT_FORCE_ACKS = false;
+//! Sequence numbers are 8 bits long
+constexpr uint8_t SEQ_NUM_MASK = 0b11111111; // 0xFF
 } // namespace
+
+
+std::string uhd::rfnoc::register_iface_stats::to_string() const
+{
+    return (
+        boost::format(
+            "ctrl_packets_sent: %1%, ack_packets_received: %2%, async_packets_received: "
+            "%3%, ack_packets_sent: %4%, ctrl_dropped: %5%, ctrl_out_of_sequence: %6%, "
+            "buffer_fullness: %7%")
+        % ctrl_packets_sent % ack_packets_received % async_packets_received
+        % ack_packets_sent % ctrl_dropped % ctrl_out_of_sequence % buffer_fullness)
+        .str();
+}
 
 ctrlport_endpoint::~ctrlport_endpoint() = default;
 
@@ -59,6 +76,11 @@ public:
 
     ~ctrlport_endpoint_impl() override = default;
 
+    void set_log_id(const std::string& log_id) override
+    {
+        _log_prefix = log_id + "::CTRLEP";
+    }
+
     void poke32(uint32_t addr,
         uint32_t data,
         uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP,
@@ -68,7 +90,7 @@ public:
              it != _custom_register_spaces.end() && addr >= it->first;
              ++it) {
             if (addr >= it->first && addr < it->second.end_addr) {
-                UHD_LOG_TRACE("CTRLEP",
+                UHD_LOG_TRACE(_log_prefix,
                     "Poking custom register space at address 0x" << std::hex << addr);
                 it->second.poke_fn(addr, data);
                 return;
@@ -84,7 +106,9 @@ public:
         bool ack                   = false) override
     {
         if (addrs.size() != data.size()) {
-            throw uhd::value_error("addrs and data vectors must be of the same length");
+            UHD_LOG_THROW(uhd::value_error,
+                _log_prefix,
+                "multi_poke32(): addrs and data vectors must be of the same length");
         }
         for (size_t i = 0; i < data.size(); i++) {
             poke32(addrs[i],
@@ -99,17 +123,15 @@ public:
         uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP,
         bool ack                   = false) override
     {
-        for (size_t i = 0; i < data.size(); i++) {
-            poke32(first_addr + (i * sizeof(uint32_t)),
-                data[i],
-                (i == 0) ? timestamp : uhd::time_spec_t::ASAP,
-                (i == data.size() - 1) ? ack : false);
-        }
+        bulk_write32(OP_BLOCK_WRITE, first_addr, data, timestamp, ack);
+    }
 
-        /* TODO: Uncomment when the atomic block poke is implemented in the FPGA
-        // Send request and optionally want for an ACK
-        send_request_packet(OP_BLOCK_WRITE, first_addr, data, timestamp, ack);
-        */
+    void burst_poke32(uint32_t addr,
+        const std::vector<uint32_t> data,
+        uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP,
+        bool ack                   = false) override
+    {
+        bulk_write32(OP_WRITE, addr, data, timestamp, ack);
     }
 
     uint32_t peek32(
@@ -119,61 +141,55 @@ public:
              it != _custom_register_spaces.end() && addr >= it->first;
              ++it) {
             if (addr >= it->first && addr < it->second.end_addr) {
-                UHD_LOG_TRACE("CTRLEP",
+                UHD_LOG_TRACE(_log_prefix,
                     "Peeking custom register space at address 0x" << std::hex << addr);
                 return it->second.peek_fn(addr);
             }
         }
         // Send request and wait for an ACK
-        boost::optional<ctrl_payload> response;
+        std::optional<ctrl_payload> response;
         std::tie(std::ignore, response) =
-            send_request_packet(OP_READ, addr, {uint32_t(0)}, timestamp);
+            send_request_packet(OP_READ, addr, {}, timestamp, true, 1);
         UHD_ASSERT_THROW(bool(response));
-        UHD_ASSERT_THROW(!response.get().data_vtr.empty());
-        return response.get().data_vtr[0];
+        UHD_ASSERT_THROW(!response.value().data_vtr.empty());
+        return response.value().data_vtr[0];
     }
 
     std::vector<uint32_t> block_peek32(uint32_t first_addr,
         size_t length,
         uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP) override
     {
-        std::vector<uint32_t> values;
-        for (size_t i = 0; i < length; i++) {
-            values.push_back(peek32(first_addr + (i * sizeof(uint32_t)),
-                (i == 0) ? timestamp : uhd::time_spec_t::ASAP));
-        }
-        return values;
-
-        /* TODO: Uncomment when the atomic block peek is implemented in the FPGA
-        // Send request and wait for an ACK
-        boost::optional<ctrl_payload> response;
-        std::tie(std::ignore, response) = send_request_packet(OP_READ,
-            first_addr,
-            std::vector<uint32_t>(length, 0),
-            timestamp);
-
-        return response.get().data_vtr;
-        */
+        return bulk_read32(OP_BLOCK_READ, first_addr, length, timestamp);
     }
 
-    void poll32(uint32_t addr,
+    std::vector<uint32_t> burst_peek32(uint32_t addr,
+        size_t length,
+        uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP) override
+    {
+        return bulk_read32(OP_READ, addr, length, timestamp);
+    }
+
+    std::optional<uint32_t> poll32(uint32_t addr,
         uint32_t data,
         uint32_t mask,
         uhd::time_spec_t timeout,
         uhd::time_spec_t timestamp = uhd::time_spec_t::ASAP,
         bool ack                   = false) override
     {
-        // TODO: Uncomment when this is implemented in the FPGA
-        throw uhd::not_implemented_error("Control poll not implemented in the FPGA");
-
         // Send request and optionally wait for an ACK
-        send_request_packet(OP_POLL,
+        std::optional<ctrl_payload> response;
+        std::tie(std::ignore, response) = send_request_packet(OP_POLL,
             addr,
             {data,
                 mask,
                 static_cast<uint32_t>(timeout.to_ticks(_timebase_clk.get_freq()))},
             timestamp,
             ack);
+        if (response) {
+            UHD_ASSERT_THROW(!response.value().data_vtr.empty());
+            return response.value().data_vtr[0];
+        }
+        return std::nullopt;
     }
 
     void sleep(uhd::time_spec_t duration, bool ack = false) override
@@ -206,21 +222,55 @@ public:
             _policy.force_acks = DEFAULT_FORCE_ACKS;
         } else {
             // TODO: Uncomment when custom policies are implemented
-            throw uhd::not_implemented_error("Policy implemented in the FPGA");
+            UHD_LOG_THROW(uhd::not_implemented_error,
+                _log_prefix,
+                "Policy implemented in the FPGA");
         }
     }
 
     void handle_recv(const ctrl_payload& rx_ctrl) override
     {
         if (rx_ctrl.is_ack) {
+            ++_acks_rcvd;
+
             // Function to process a response with no sequence errors
             auto process_correct_response = [this, rx_ctrl]() {
                 response_status_t resp_status = RESP_VALID;
                 // Grant flow control credits
                 _buff_occupied -= get_payload_size(_req_queue.front());
                 _buff_free_cond.notify_one();
-                if (get_payload_size(_req_queue.front()) != get_payload_size(rx_ctrl)) {
-                    resp_status = RESP_SIZEERR;
+                const bool is_write_op =
+                    (_req_queue.front().op_code == OP_WRITE
+                        || _req_queue.front().op_code == OP_BLOCK_WRITE);
+                const bool is_read_op  = (_req_queue.front().op_code == OP_READ
+                                         || _req_queue.front().op_code == OP_BLOCK_READ);
+                const bool is_sleep_op = (_req_queue.front().op_code == OP_SLEEP);
+                const bool is_poll_op  = (_req_queue.front().op_code == OP_POLL);
+                if (is_write_op) {
+                    // Write responses carry no data words (NumData = 0).
+                    if (!rx_ctrl.data_vtr.empty()) {
+                        resp_status = RESP_SIZEERR;
+                    }
+                } else if (is_read_op) {
+                    // Read responses must return exactly req_size words.
+                    if (rx_ctrl.data_vtr.size() != _req_queue.front().req_size) {
+                        resp_status = RESP_SIZEERR;
+                    }
+                } else if (is_sleep_op) {
+                    // Sleep responses carry no data words (NumData = 0).
+                    if (!rx_ctrl.data_vtr.empty()) {
+                        resp_status = RESP_SIZEERR;
+                    }
+                } else if (is_poll_op) {
+                    // Poll responses always return exactly 1 data word.
+                    if (rx_ctrl.data_vtr.size() != 1) {
+                        resp_status = RESP_SIZEERR;
+                    }
+                } else {
+                    if (get_payload_size(_req_queue.front())
+                        != get_payload_size(rx_ctrl)) {
+                        resp_status = RESP_SIZEERR;
+                    }
                 }
                 // Pop the request from the queue
                 _req_queue.pop_front();
@@ -262,53 +312,89 @@ public:
                     // provide feedback
                     log_dropped_packet(resp);
                 }
-                // Pop the request from the queue
-                _req_queue.pop_front();
             };
 
-            // Peek at the request queue to check the expected sequence number
             std::unique_lock<std::mutex> lock(_mutex);
-            if (!_req_queue.empty()) {
-                int8_t seq_num_diff =
-                    int8_t(rx_ctrl.seq_num - _req_queue.front().seq_num);
-                if (seq_num_diff == 0) { // No sequence error
+            // Peek at the request queue to check the expected sequence number.
+            // If the request queue is empty, then we always have an error so
+            // we simply set a non-zero sentinel in seq_num_diff.
+            // Note: with 8-bit seq_nums, uint8_t subtraction wraps mod 256
+            // naturally, so no explicit modulo is needed.
+            const uint8_t seq_num_diff =
+                _req_queue.empty()
+                    ? uint8_t(1)
+                    : uint8_t(rx_ctrl.seq_num - _req_queue.front().seq_num);
+            if (seq_num_diff == 0) { // No sequence error by seq_num
+                // Also verify op_code and address to guard against stale ACKs
+                // that happen to share the same 8-bit seq_num (either from the
+                // previous session or from earlier in the current session when
+                // the 8-bit counter wraps). A genuine ACK always echoes op_code
+                // and address unchanged.
+                const bool op_addr_match = _req_queue.front().op_code == rx_ctrl.op_code
+                                           && _req_queue.front().address
+                                                  == rx_ctrl.address;
+                if (op_addr_match) {
                     process_correct_response();
-                } else if (seq_num_diff > 0) { // Packet(s) dropped
-                    // Tag all dropped packets
-                    for (int8_t i = 0; i < seq_num_diff; i++) {
+                } else {
+                    _ctrl_out_of_seq++;
+                    UHD_LOG_DEBUG(_log_prefix,
+                        "Dropping stale ACK (seq_num match, "
+                        "op/addr mismatch): "
+                            << rx_ctrl.to_string());
+                }
+            } else {
+                // Packets were either dropped or reordered. If they were
+                // dropped, then there should be a corresponding packet to
+                // this ACK in the request queue.
+                // If they were reordered, then a previous packet will have
+                // cleared the corresponding packet from the request queue
+                // and we ignore this packet (but log the occurrence)
+                const auto it = std::find_if(_req_queue.begin(),
+                    _req_queue.end(),
+                    [rx_ctrl](const ctrl_payload& req) {
+                        return req.seq_num == rx_ctrl.seq_num
+                               && req.op_code == rx_ctrl.op_code
+                               && req.address == rx_ctrl.address;
+                    });
+                if (it == _req_queue.end()) {
+                    // No corresponding request found, assume this is out of
+                    // sequence.
+                    _ctrl_out_of_seq++;
+                    UHD_LOG_WARNING(_log_prefix,
+                        "Received out-of-sequence ACK: " << rx_ctrl.to_string());
+                } else {
+                    // Drop all packets in the request queue up to and including the
+                    // packet corresponding to this ACK, and log each dropped packet
+                    while (_req_queue.front().seq_num != rx_ctrl.seq_num
+                           || _req_queue.front().op_code != rx_ctrl.op_code
+                           || _req_queue.front().address != rx_ctrl.address) {
                         process_incorrect_response();
+                        _req_queue.pop_front();
+                        _ctrl_dropped++;
                     }
                     // Process correct response
                     process_correct_response();
-                } else { // Reordered packet(s)
-                    // Requests are processed in order. If seq_num_diff is negative then
-                    // we have either already seen this response or we have dropped >128
-                    // responses. Either way ignore this packet.
                 }
-            } else {
-                // received a response without any request in queue
-                // ignore the message an report a warning
-                UHD_LOG_WARNING("CTRLEP",
-                    "Received respones with sequence number "
-                        << rx_ctrl.seq_num << " but request queue is empty.");
             }
         } else {
+            _async_rcvd++;
+
             // Handle asynchronous message callback
             ctrl_status_t status = CMD_CMDERR;
             if (rx_ctrl.op_code != OP_WRITE && rx_ctrl.op_code != OP_BLOCK_WRITE) {
                 UHD_LOG_ERROR(
-                    "CTRLEP", "Malformed async message request: Invalid opcode");
+                    _log_prefix, "Malformed async message request: Invalid opcode");
             } else if (rx_ctrl.dst_port != _local_port) {
-                UHD_LOG_ERROR("CTRLEP",
+                UHD_LOG_ERROR(_log_prefix,
                     "Malformed async message request: Invalid port "
                         << rx_ctrl.dst_port << ", expected my local port "
                         << _local_port);
             } else if (rx_ctrl.data_vtr.empty()) {
                 UHD_LOG_ERROR(
-                    "CTRLEP", "Malformed async message request: Invalid num_data");
+                    _log_prefix, "Malformed async message request: Invalid num_data");
             } else {
                 if (!_validate_async_msg(rx_ctrl.address, rx_ctrl.data_vtr)) {
-                    UHD_LOG_ERROR("CTRLEP",
+                    UHD_LOG_ERROR(_log_prefix,
                         "Malformed async message request: Async message was not "
                         "validated by block controller!");
                 } else {
@@ -323,13 +409,16 @@ public:
                 tx_ctrl.is_ack     = true;
                 tx_ctrl.src_epid   = _my_epid;
                 tx_ctrl.status     = status;
+                tx_ctrl.data_vtr   = {};
+                tx_ctrl.num_data   = 0;
                 const auto timeout = [&]() {
                     std::unique_lock<std::mutex> lock(_mutex);
                     return _policy.timeout;
                 }();
                 _handle_send(tx_ctrl, timeout);
+                _acks_sent++;
             } catch (...) {
-                UHD_LOG_ERROR("CTRLEP",
+                UHD_LOG_ERROR(_log_prefix,
                     "Encountered an error sending a response for an async message");
                 return;
             }
@@ -338,10 +427,10 @@ public:
                     _handle_async_msg(
                         rx_ctrl.address, rx_ctrl.data_vtr, rx_ctrl.timestamp);
                 } catch (const std::exception& ex) {
-                    UHD_LOG_ERROR("CTRLEP",
+                    UHD_LOG_ERROR(_log_prefix,
                         "Caught exception during async message handling: " << ex.what());
                 } catch (...) {
-                    UHD_LOG_ERROR("CTRLEP",
+                    UHD_LOG_ERROR(_log_prefix,
                         "Caught unknown exception during async message handling!");
                 }
             }
@@ -370,7 +459,8 @@ public:
         // This will be the case if the caller either specifies a zero length space or the
         // end_addr ends up exceeding the maximum value for a uint32_t
         if (end_addr <= start_addr) {
-            throw uhd::value_error(
+            UHD_LOG_THROW(uhd::value_error,
+                _log_prefix,
                 "Length of custom register space causes an invalid register space");
         }
 
@@ -380,7 +470,8 @@ public:
                  ++it) {
                 if ((start_addr >= it->first && start_addr < it->second.end_addr)
                     || (start_addr < it->first && end_addr > it->first)) {
-                    throw uhd::rfnoc_error(
+                    UHD_LOG_THROW(uhd::rfnoc_error,
+                        _log_prefix,
                         "Register space overlaps with existing register space");
                 }
             }
@@ -390,6 +481,18 @@ public:
             start_addr, custom_register_space{end_addr, poke_fn, peek_fn});
     }
 
+    register_iface_stats get_stats() const override
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        return register_iface_stats{_ctrl_sent,
+            _acks_rcvd,
+            _async_rcvd,
+            _acks_sent,
+            _ctrl_dropped,
+            _ctrl_out_of_seq,
+            _buff_occupied};
+    }
+
 private:
     //! The software status (different from the transaction status) of the response
     enum response_status_t { RESP_VALID, RESP_DROPPED, RESP_RTERR, RESP_SIZEERR };
@@ -397,7 +500,10 @@ private:
     //! Returns the length of the control payload in 32-bit words
     inline static size_t get_payload_size(const ctrl_payload& payload)
     {
-        return 2 + (payload.timestamp.is_initialized() ? 2 : 0) + payload.data_vtr.size();
+        return 2 // Control packet header, incl. HasTime, SeqNum, etc.
+               + (bool(payload.timestamp) ? 2 : 0) // Timestamp
+               + 1 // Control operation, incl. OpCode, Address, etc.
+               + payload.data_vtr.size(); // Data words
     }
 
     //! Marks the start of a timeout for an operation and returns the expiration time
@@ -417,24 +523,31 @@ private:
         return false;
     }
 
-    //! Sends a request control packet to a remote device, optionally waiting
-    // for an ACK, and returns any response if applicable
-    const std::pair<ctrl_payload, boost::optional<ctrl_payload>> send_request_packet(
-        ctrl_opcode_t op_code,
+    /*! \brief Sends a control request packet without waiting for a response.
+     *
+     * If require_ack or _policy.force_acks is true, the request is registered
+     * for ACK tracking so collect_ack_response() can retrieve the response.
+     * Returns the transmitted payload and a bool indicating whether an ACK was
+     * registered.
+     */
+    const std::pair<ctrl_payload, bool> fire_request_packet(ctrl_opcode_t op_code,
         uint32_t address,
         const std::vector<uint32_t>& data_vtr,
         const uhd::time_spec_t& time_spec,
-        const bool require_ack = true)
+        const bool require_ack,
+        const size_t req_size = 0)
     {
         if (!_client_clk.is_running()) {
-            throw uhd::system_error("Ctrlport client clock is not running");
+            UHD_LOG_THROW(
+                uhd::system_error, _log_prefix, "Ctrlport client clock is not running");
         }
 
         // Convert from uhd::time_spec to timestamp
-        boost::optional<uint64_t> timestamp;
+        std::optional<uint64_t> timestamp;
         if (time_spec != time_spec_t::ASAP) {
             if (!_timebase_clk.is_running()) {
-                throw uhd::system_error("Timebase clock is not running");
+                UHD_LOG_THROW(
+                    uhd::system_error, _log_prefix, "Timebase clock is not running");
             }
             timestamp = time_spec.to_ticks(_timebase_clk.get_freq());
         }
@@ -445,12 +558,14 @@ private:
         ctrl_payload tx_ctrl;
         tx_ctrl.dst_port    = _local_port;
         tx_ctrl.src_port    = _local_port;
-        tx_ctrl.seq_num     = _tx_seq_num;
+        tx_ctrl.seq_num     = _ctrl_sent & SEQ_NUM_MASK;
         tx_ctrl.timestamp   = timestamp;
         tx_ctrl.is_ack      = false;
         tx_ctrl.src_epid    = _my_epid;
         tx_ctrl.address     = address;
         tx_ctrl.data_vtr    = data_vtr;
+        tx_ctrl.num_data    = data_vtr.size();
+        tx_ctrl.req_size    = req_size;
         tx_ctrl.byte_enable = 0xF;
         tx_ctrl.op_code     = op_code;
         tx_ctrl.status      = CMD_OKAY;
@@ -459,8 +574,8 @@ private:
         // If there is no room in the downstream buffer, then wait until the timeout
         size_t pyld_size   = get_payload_size(tx_ctrl);
         auto buff_not_full = [this, pyld_size]() -> bool {
-            // Allocate room in the queue for one async response packet
-            // If we can fit the current request in the queue then we can proceed
+            // Allocate room in the queue for one async response packet.
+            // If we can fit the current request in the queue then we can proceed.
             return (_buff_occupied + pyld_size)
                    <= (_buff_capacity
                        - (ASYNC_MESSAGE_SIZE * _max_outstanding_async_msgs));
@@ -472,14 +587,18 @@ private:
                 start_timeout(check_timed_in_queue() ? MASSIVE_TIMEOUT : _policy.timeout);
 
             if (not _buff_free_cond.wait_until(lock, timeout_time, buff_not_full)) {
-                throw uhd::op_timeout(
-                    "Control operation timed out waiting for space in command buffer");
+                UHD_LOG_THROW(uhd::op_timeout,
+                    _log_prefix,
+                    "Control operation timed out waiting for space in command buffer "
+                    "(request: "
+                        << tx_ctrl.to_string() << ")");
             }
         }
         _buff_occupied += pyld_size;
         _req_queue.push_back(tx_ctrl);
 
-        if (require_ack || _policy.force_acks) {
+        const bool register_ack = require_ack || _policy.force_acks;
+        if (register_ack) {
             // If the client wants an ACK for this request, make note of its
             // details in a set. This set will be consulted when responses are
             // received.
@@ -490,21 +609,106 @@ private:
         try {
             // Send the payload as soon as there is room in the buffer
             _handle_send(tx_ctrl, _policy.timeout);
-            _tx_seq_num = (_tx_seq_num + 1) % 64;
-
-            if (require_ack || _policy.force_acks) {
-                auto response = wait_for_ack(tx_ctrl, lock);
-                return {tx_ctrl, response};
-            } else {
-                return {tx_ctrl, {}};
-            }
+            _ctrl_sent++;
         } catch (...) {
             // Something went wrong while trying to send the request.
             // Remove the entry from the ACK tracking set.
-            wanted_ack_key ack_key{tx_ctrl.seq_num, tx_ctrl.op_code, tx_ctrl.address};
-            _wanted_acks.erase(ack_key);
+            if (register_ack) {
+                wanted_ack_key ack_key{tx_ctrl.seq_num, tx_ctrl.op_code, tx_ctrl.address};
+                _wanted_acks.erase(ack_key);
+            }
             throw;
         }
+
+        return {tx_ctrl, register_ack};
+    }
+
+    //! Waits for and returns the ACK response for a previously fired request.
+    // Must only be called for requests where fire_request_packet() returned
+    // true for the registered bool.
+    const ctrl_payload collect_ack_response(const ctrl_payload& request)
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        return wait_for_ack(request, lock);
+    }
+
+    //! Sends a request control packet to a remote device, optionally waiting
+    // for an ACK, and returns any response if applicable
+    const std::pair<ctrl_payload, std::optional<ctrl_payload>> send_request_packet(
+        ctrl_opcode_t op_code,
+        uint32_t address,
+        const std::vector<uint32_t>& data_vtr,
+        const uhd::time_spec_t& time_spec,
+        const bool require_ack = true,
+        const size_t req_size  = 0)
+    {
+        const auto [tx_ctrl, registered] = fire_request_packet(
+            op_code, address, data_vtr, time_spec, require_ack, req_size);
+        if (registered) {
+            return {tx_ctrl, collect_ack_response(tx_ctrl)};
+        }
+        return {tx_ctrl, {}};
+    }
+
+    //! Shared implementation for block_poke32 and burst_poke32. Sends data in
+    // chunks of up to MAX_DATA_WORDS words. For OP_BLOCK_WRITE, the address
+    // advances by sizeof(uint32_t) per word. For all other opcodes, all chunks
+    // write to base_addr (burst write).
+    void bulk_write32(ctrl_opcode_t op,
+        uint32_t base_addr,
+        const std::vector<uint32_t>& data,
+        uhd::time_spec_t timestamp,
+        bool ack)
+    {
+        const size_t num_words     = data.size();
+        constexpr size_t MAX_WORDS = ctrl_payload::MAX_DATA_WORDS;
+        for (size_t offset = 0; offset < num_words; offset += MAX_WORDS) {
+            const size_t chunk_size = std::min(MAX_WORDS, num_words - offset);
+            const uint32_t addr     = (op == OP_BLOCK_WRITE)
+                                          ? base_addr + offset * sizeof(uint32_t)
+                                          : base_addr;
+            send_request_packet(op,
+                addr,
+                std::vector<uint32_t>(
+                    data.begin() + offset, data.begin() + offset + chunk_size),
+                (offset == 0) ? timestamp : uhd::time_spec_t::ASAP,
+                (offset + chunk_size >= num_words) ? ack : false);
+        }
+    }
+
+    //! Shared implementation for block_peek32 and burst_peek32. Fires all read
+    // requests before collecting any response, allowing them to be in flight
+    // simultaneously. For OP_BLOCK_READ, the address advances by
+    // sizeof(uint32_t) per word. For all other opcodes, all chunks read from
+    // base_addr (burst read).
+    std::vector<uint32_t> bulk_read32(
+        ctrl_opcode_t op, uint32_t base_addr, size_t length, uhd::time_spec_t timestamp)
+    {
+        std::vector<uint32_t> result;
+        result.reserve(length);
+        constexpr size_t MAX_WORDS = ctrl_payload::MAX_DATA_WORDS;
+        std::vector<std::pair<ctrl_payload, size_t>> requests;
+        requests.reserve((length + MAX_WORDS - 1) / MAX_WORDS);
+        for (size_t offset = 0; offset < length; offset += MAX_WORDS) {
+            const size_t chunk_size = std::min(MAX_WORDS, length - offset);
+            const uint32_t addr =
+                (op == OP_BLOCK_READ) ? base_addr + offset * sizeof(uint32_t) : base_addr;
+            const auto [tx_ctrl, _] = fire_request_packet(op,
+                addr,
+                {},
+                (offset == 0) ? timestamp : uhd::time_spec_t::ASAP,
+                true,
+                chunk_size);
+            requests.emplace_back(tx_ctrl, chunk_size);
+        }
+        // Collect responses in order.
+        for (const auto& [tx_ctrl, chunk_size] : requests) {
+            const ctrl_payload response = collect_ack_response(tx_ctrl);
+            UHD_ASSERT_THROW(response.data_vtr.size() == chunk_size);
+            result.insert(
+                result.end(), response.data_vtr.begin(), response.data_vtr.end());
+        }
+        return result;
     }
 
     //! Waits for and returns the ACK for the specified request
@@ -541,7 +745,7 @@ private:
                     // Validate transaction status, either returning the
                     // response if everything checks out, or throwing an
                     // exception if the status indicates an error
-                    return validate_ack(rx_ctrl, resp_status);
+                    return validate_ack(request, rx_ctrl, resp_status);
                 }
             }
             // If we got here, that means we iterated the queue and did NOT
@@ -555,26 +759,53 @@ private:
         } while (
             _resp_ready_cond.wait_until(lock, timeout_time) != std::cv_status::timeout);
 
-        throw uhd::op_timeout("Control operation timed out waiting for ACK");
+        UHD_LOG_THROW(uhd::op_timeout,
+            _log_prefix,
+            "Control operation timed out waiting for ACK. Request sent: "
+                << request.to_string());
     }
 
-    const ctrl_payload validate_ack(
-        const ctrl_payload& rx_ctrl, response_status_t resp_status) const
+    const ctrl_payload validate_ack(const ctrl_payload& request,
+        const ctrl_payload& rx_ctrl,
+        response_status_t resp_status) const
     {
         if (rx_ctrl.status == CMD_CMDERR) {
-            throw uhd::op_failed("Control operation returned a failing status");
+            UHD_LOG_THROW(uhd::op_failed,
+                _log_prefix,
+                "Control operation returned a failing status.\nRequest sent: "
+                    << request.to_string()
+                    << "Response received: " << rx_ctrl.to_string());
         } else if (rx_ctrl.status == CMD_TSERR) {
-            throw uhd::op_timerr("Control operation returned a timestamp error");
+            UHD_LOG_THROW(uhd::op_timerr,
+                _log_prefix,
+                "Control operation returned a timestamp error.\nRequest sent: "
+                    << request.to_string()
+                    << "Response received: " << rx_ctrl.to_string());
         }
-        // Check data vector size
-        if (rx_ctrl.data_vtr.empty()) {
-            throw uhd::op_failed("Control operation returned a malformed response");
+        // Check data vector size. Write and sleep responses carry no data words.
+        const bool is_write_op = (request.op_code == OP_WRITE
+                                  || request.op_code == OP_BLOCK_WRITE
+                                  || request.op_code == OP_SLEEP);
+        if (!is_write_op && rx_ctrl.data_vtr.empty()) {
+            UHD_LOG_THROW(uhd::op_failed,
+                _log_prefix,
+                "Control operation returned a malformed response.\nRequest sent: "
+                    << request.to_string()
+                    << "Response received: " << rx_ctrl.to_string());
         }
         // Validate response status
         if (resp_status == RESP_DROPPED) {
-            throw uhd::op_seqerr("Response for a control transaction was dropped");
+            UHD_LOG_THROW(uhd::op_seqerr,
+                _log_prefix,
+                "Response for a control transaction was dropped.\nRequest sent: "
+                    << request.to_string()
+                    << "Response received: " << rx_ctrl.to_string());
         } else if (resp_status == RESP_RTERR) {
-            throw uhd::op_timerr("Control operation encountered a routing error");
+            UHD_LOG_THROW(uhd::op_timerr,
+                _log_prefix,
+                "Control operation encountered a routing error.\nRequest sent: "
+                    << request.to_string()
+                    << "Response received: " << rx_ctrl.to_string());
         }
         return rx_ctrl;
     }
@@ -583,7 +814,7 @@ private:
     {
         std::string packet = resp.to_string();
         packet.pop_back(); // Remove the trailing \n
-        UHD_LOG_DEBUG("CTRLEP",
+        UHD_LOG_DEBUG(_log_prefix,
             "Control response for ack-less request returned a failing status: "
                 << packet);
     }
@@ -593,7 +824,7 @@ private:
         std::string packet = resp.to_string();
         packet.pop_back(); // Remove the trailing \n
         UHD_LOG_DEBUG(
-            "CTRLEP", "Control response for ack-less request was dropped: " << packet);
+            _log_prefix, "Control response for ack-less request was dropped: " << packet);
     }
 
     //! The parameters associated with the policy that governs this object
@@ -618,14 +849,13 @@ private:
     //! The clock that drives the timing logic for the ctrlport endpoint
     const clock_iface& _timebase_clk;
 
-    //! The function to call to validate an async message (by default, all async
-    // messages are considered valid)
+    /*! \brief The function to call to validate an async message (by default, all async
+     * messages are considered valid).
+     */
     async_msg_validator_t _validate_async_msg =
         [](uint32_t, const std::vector<uint32_t>&) { return true; };
     //! The function to call to handle an async message
     async_msg_callback_t _handle_async_msg = async_msg_callback_t();
-    //! The current control sequence number of outgoing packets
-    uint8_t _tx_seq_num = 0;
     //! The number of occupied words in the downstream buffer
     ssize_t _buff_occupied = 0;
     //! The arguments for the policy that governs this register interface
@@ -639,14 +869,35 @@ private:
     //! A condition variable that hold the "response is available" condition
     std::condition_variable _resp_ready_cond;
     //! A mutex to protect all state in this class
-    std::mutex _mutex;
-    //! A set of {opcode, address, sequence numbers} triples associated with
-    // request packets for which the client cares about receiving ACKs
+    mutable std::mutex _mutex;
+    /*! \brief A set of {opcode, address, sequence numbers} triples associated with
+     * request packets for which the client cares about receiving ACKs.
+     */
     using wanted_ack_key = std::tuple<uint8_t, ctrl_opcode_t, uint32_t>;
     std::set<wanted_ack_key> _wanted_acks;
-    //! Map of custom defined peek/poke functions with end address for custom register
-    // space starting address
+    /*! \brief Map of custom defined peek/poke functions with end address for custom
+     * register space starting address.
+     */
     std::map<uint32_t, custom_register_space> _custom_register_spaces;
+
+    std::string _log_prefix = "::CTRLEP";
+
+    /*! \brief Number of sent control packets.
+     *
+     * This is also used to calculate the outgoing packet's sequence number, which is the
+     * lower 6 bits of this counter.
+     */
+    uint64_t _ctrl_sent = 0;
+    //! Number of received ACK packets.
+    uint64_t _acks_rcvd = 0;
+    //! Number of async packets received
+    uint64_t _async_rcvd = 0;
+    //! Number of ACKs sent out after async packets received
+    uint64_t _acks_sent = 0;
+    //! Number of detected packet drops
+    uint64_t _ctrl_dropped = 0;
+    //! Number of times out-of-sequence packets were detected
+    uint64_t _ctrl_out_of_seq = 0;
 };
 
 ctrlport_endpoint::sptr ctrlport_endpoint::make(const send_fn_t& handle_send,

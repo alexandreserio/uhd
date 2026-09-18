@@ -54,6 +54,14 @@
 message(STATUS "")
 message(STATUS "Checking for Boost version ${UHD_BOOST_MIN_VERSION} or greater")
 
+if(CMAKE_MINIMUM_REQUIRED_VERSION VERSION_GREATER_EQUAL "3.30")
+    # Policy automatically set to NEW in CMake 3.30 and later; not need to set it here again.
+    message(WARNING "Unnecessary policy check, remove this!")
+elseif(POLICY CMP0167) # CMP0167 is available in CMake 3.30 and later
+    # Use upstream BoostConfig.cmake implementations instead of deprecated FindBoost module.
+    cmake_policy(SET CMP0167 NEW)
+endif()
+
 # unset return variables
 unset(Boost_FOUND)
 unset(Boost_INCLUDE_DIRS)
@@ -91,15 +99,6 @@ if(UHD_BOOST_OPTIONAL_COMPONENTS_LEN EQUAL 0 AND
     return()
 endif()
 
-# if the OS is MINGW and if 'thread' is in the list, change its name
-if(MINGW)
-    list(FIND UHD_BOOST_REQUIRED_COMPONENTS "thread" THREAD_NDX)
-    if(NOT ${THREAD_NDX} EQUAL -1)
-        list(REMOVE_AT UHD_BOOST_REQUIRED_COMPONENTS ${THREAD_NDX})
-        list(INSERT UHD_BOOST_REQUIRED_COMPONENTS ${THREAD_NDX} thread_win32)
-    endif()
-endif()
-
 # special library directory that's used by some Linux
 if(UNIX AND NOT BOOST_ROOT AND EXISTS "/usr/lib64")
     list(APPEND BOOST_LIBRARYDIR "/usr/lib64") #fedora 64-bit fix
@@ -124,7 +123,6 @@ if(MSVC)
             add_definitions(-DBOOST_ALL_DYN_LINK) #setup boost auto-linking in msvc
         else(BOOST_ALL_DYN_LINK)
             message(STATUS "  Static Libs")
-            set(UHD_BOOST_REQUIRED_COMPONENTS) #empty components list for static link
         endif(BOOST_ALL_DYN_LINK)
     endif(VCPKG_TARGET_TRIPLET)
 endif(MSVC)
@@ -145,10 +143,10 @@ if(POLICY CMP0093)
     cmake_policy(SET CMP0093 NEW)
 endif()
 
-# if no CXX STANDARD is set, default to that required by UHD: c++14
+# if no CXX STANDARD is set, default to that required by UHD: c++20
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
-  message(WARNING "\nC++ standard not yet set; setting to C++14.\n")
+  set(CMAKE_CXX_STANDARD 20)
+  message(WARNING "\nC++ standard not yet set; setting to C++20.\n")
 endif()
 
 if(${UHD_BOOST_OPTIONAL_COMPONENTS_LEN} GREATER 0)
@@ -242,6 +240,15 @@ if(Boost_FOUND)
     message(STATUS "Looking for Boost version ${UHD_BOOST_MIN_VERSION} or greater - found")
 else()
     message(STATUS "Looking for Boost version ${UHD_BOOST_MIN_VERSION} or greater - not found")
+endif()
+
+# Prefer the modern header-only Boost imported target when available, but keep
+# the legacy alias for older FindBoost/CMake combinations.
+if(TARGET Boost::headers AND NOT TARGET Boost::boost)
+    add_library(Boost::boost INTERFACE IMPORTED)
+    set_target_properties(Boost::boost PROPERTIES
+        INTERFACE_LINK_LIBRARIES Boost::headers
+    )
 endif()
 
 # unset some internal variables, if set

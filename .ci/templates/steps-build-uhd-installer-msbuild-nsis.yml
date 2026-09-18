@@ -35,10 +35,38 @@ parameters:
 
 steps:
 - script: |
-    copy /y ${{ parameters.uhdSrcDir }}\.ci\docker\vcpkg\vcpkg.json vcpkg.json
+    setlocal enabledelayedexpansion
+    echo pythonVersion=$(pythonVersion)
+    if "$(pythonVersion)"=="python310" (
+      set pyVersionType=1
+    ) else if "$(pythonVersion)"=="python311" (
+      set pyVersionType=1
+    ) else if "$(pythonVersion)"=="python312" (
+      set pyVersionType=1
+    ) else (
+      set pyVersionType=2
+    )
+    echo pyVersionType=!pyVersionType!
+    echo ##vso[task.setvariable variable=PYVERSIONTYPE]!pyVersionType!
+
+    echo environment var VCPKG_TARGET_TRIPLET=%VCPKG_TARGET_TRIPLET%
+    call ${{ parameters.uhdSrcDir }}\.ci\utils\extract-vs-version.bat "$(cmakeCompiler)"
+    copy /y ${{ parameters.uhdSrcDir }}\.ci\docker\vcpkg\%vcpkgManifestFile% vcpkg.json
     %VCPKG_INSTALL_DIR%\vcpkg.exe install --triplet uhd-x64-windows-static-md --clean-after-build
   workingDirectory: ${{ parameters.uhdVcpkgManifestDir }}
   displayName: refresh vcpkg dependencies
+
+- script: |
+    pip config list
+    python -m pip install --upgrade pip
+    if "%PYVERSIONTYPE%"=="1" (
+      pip install -r ${{ parameters.uhdSrcDir }}\host\python\requirements.txt
+    ) else (
+      echo Using numpy 2.x requirements for python313 and above
+      pip install -r ${{ parameters.uhdSrcDir }}\host\python\requirements_np2.txt
+      pip install "pybind11>=2.12"
+    )
+  displayName: refresh python dependencies
 
 - script: |
     mkdir ${{ parameters.uhdBuildDir }}
@@ -47,7 +75,8 @@ steps:
       -DVCPKG_TARGET_TRIPLET=uhd-$(vsArch)-windows-static-md ^
       -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALL_DIR%/scripts/buildsystems/vcpkg.cmake ^
       -DVCPKG_INSTALLED_DIR=${{ parameters.uhdVcpkgManifestDir }}\vcpkg_installed ^
-      -DVCPKG_MANIFEST_DIR=${{ parameters.uhdVcpkgManifestDir }}
+      -DVCPKG_MANIFEST_DIR=${{ parameters.uhdVcpkgManifestDir }} ^
+      -DVCPKG_MANIFEST_INSTALL=OFF
     mkdir ${{ parameters.uhdImageDir }}
     python ${{ parameters.uhdBuildDir }}/utils/uhd_images_downloader.py -i ${{ parameters.uhdImageDir }} ${{ parameters.uhdImagesDownloaderExtraArgs }}
   displayName: Download uhd-images
@@ -78,6 +107,7 @@ steps:
       -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALL_DIR%/scripts/buildsystems/vcpkg.cmake ^
       -DVCPKG_INSTALLED_DIR=${{ parameters.uhdVcpkgManifestDir }}\vcpkg_installed ^
       -DVCPKG_MANIFEST_DIR=${{ parameters.uhdVcpkgManifestDir }} ^
+      -DVCPKG_MANIFEST_INSTALL=OFF ^
       -DUHD_IMAGES_SRC_DIR="${{ parameters.uhdImageDir }}" ^
       -DUHD_IMAGES_DIR="C:\\Program Files (x86)\\UHD\\share\\uhd\\images,C:\\Program Files\\UHD\\share\\uhd\\images" ^
       -DENABLE_EXTEND_WIN_PACKAGING=ON ^
@@ -93,23 +123,125 @@ steps:
 
 - script: |
     cd ${{ parameters.uhdBuildDir }}
-    call "C:\Program Files (x86)\Microsoft Visual Studio\$(vsYear)\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" $(vsArch)
-    msbuild.exe package.vcxproj -maxCpuCount -p:configuration=release
-  displayName: msbuild package
+    call "$(vsToolsInstallDir)\VC\Auxiliary\Build\vcvarsall.bat" $(vsArch)
+    msbuild.exe ALL_BUILD.vcxproj -maxCpuCount -p:configuration=release
+  displayName: msbuild ALL_BUILD
+
+- powershell: |
+    $attemptSigning = "false"
+    if ("$(Build.Reason)" -ne "PullRequest" -and "$(should-sign-binaries)" -eq "yes") {
+      $attemptSigning = "true"
+    }
+
+    Write-Host "##vso[task.setvariable variable=attemptSigning]$attemptSigning"
+    Write-Host "attemptSigning=$attemptSigning (Build.Reason=$(Build.Reason), should-sign-binaries=$(should-sign-binaries))"
+
+    if ("${{ parameters.uhdReleaseBinaries }}" -eq "True" -and $attemptSigning -ne "true") {
+      Write-Host "##vso[task.logissue type=warning]Release binaries are enabled, but signing will not be attempted."
+    }
+  displayName: Determine signing attempt
+
+- powershell: |
+    $stagingDir = "$(Pipeline.Workspace)\signing"
+    New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
+    $binaries = Get-ChildItem -Path "${{ parameters.uhdBuildDir }}" -Recurse -Include "*.dll","*.exe","*.pyd" -File |
+      Where-Object {
+        ($_.DirectoryName -match '\\Release$' -or $_.DirectoryName -match '\\python\\uhd$') -and
+        $_.Name -notmatch '^libusb' -and
+        $_.Name -notmatch '^boost_unit_test_framework'
+      }
+    Write-Host "Found $($binaries.Count) binaries to stage for signing"
+
+    foreach ($bin in $binaries) {
+      $relativePath = $bin.FullName.Substring("${{ parameters.uhdBuildDir }}".Length)
+      $dest = Join-Path $stagingDir $relativePath
+      New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+      Copy-Item -Path $bin.FullName -Destination $dest -Force
+      Write-Host "Staged $relativePath"
+    }
+  displayName: Stage binaries for signing
+  condition: and(succeeded(), eq(variables['attemptSigning'], 'true'))
+
+- powershell: |
+    p4 sync $(signtool-p4-path)
+    $p4where = p4 -Ztag where $(signtool-p4-path)
+    $LocalSignToolPath = ($p4where[2] -split "... path ")[1]
+    Write-Host "Sign tool: $LocalSignToolPath"
+
+    $stagingDir = "$(Pipeline.Workspace)\signing"
+    $binaries = Get-ChildItem -Path $stagingDir -Recurse -Include "*.dll","*.exe","*.pyd" -File
+    Write-Host "Found $($binaries.Count) binaries to sign"
+
+    foreach ($bin in $binaries) {
+      Write-Host "Signing $($bin.FullName)"
+      & $LocalSignToolPath $bin.FullName $bin.FullName
+      if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to sign $($bin.FullName)"
+        exit 1
+      }
+    }
+  displayName: Sign binaries
+  condition: and(succeeded(), eq(variables['attemptSigning'], 'true'))
+  target: host
+  timeoutInMinutes: 30
+
+- powershell: |
+    $stagingDir = "$(Pipeline.Workspace)\signing"
+    $binaries = Get-ChildItem -Path $stagingDir -Recurse -Include "*.dll","*.exe","*.pyd" -File
+
+    foreach ($bin in $binaries) {
+      $relativePath = $bin.FullName.Substring($stagingDir.Length)
+      $dest = Join-Path "${{ parameters.uhdBuildDir }}" $relativePath
+      Copy-Item -Path $bin.FullName -Destination $dest -Force
+      Write-Host "Restored $relativePath"
+    }
+    Write-Host "Copied $($binaries.Count) signed binaries back to build dir"
+  displayName: Copy signed binaries back to build dir
+  condition: and(succeeded(), eq(variables['attemptSigning'], 'true'))
+
+- ${{ if parameters.uhdBuildPythonAPI }}:
+  - script: |
+      cd ${{ parameters.uhdBuildDir }}
+      call "$(vsToolsInstallDir)\VC\Auxiliary\Build\vcvarsall.bat" $(vsArch)
+      msbuild.exe python\pyuhd_wheel.vcxproj -p:configuration=release
+    displayName: Rebuild Python wheel
+
+- script: |
+    cd ${{ parameters.uhdBuildDir }}
+    call "$(vsToolsInstallDir)\VC\Auxiliary\Build\vcvarsall.bat" $(vsArch)
+    msbuild.exe PACKAGE.vcxproj -p:configuration=release
+  displayName: Build NSIS installer
 
 - task: CopyFiles@2.246.0
   inputs:
     sourceFolder: ${{ parameters.uhdBuildDir }}
     contents: 'uhd_*.exe'
-    targetFolder: '$(Build.BinariesDirectory)/uhddev-installer'
+    targetFolder: '${{ parameters.uhdInstallerDir }}'
     cleanTargetFolder: ${{ parameters.cleanTargetFolder }}
   displayName: Copy msbuild installer
+
+- powershell: |
+    p4 sync $(signtool-p4-path)
+    $p4where = p4 -Ztag where $(signtool-p4-path)
+    # Parses p4 where output to find local path
+    $LocalSignToolPath = ($p4where[2] -split "... path ")[1]
+    Write-Host "Sign tool: $LocalSignToolPath"
+    # Finds the installer binary name
+    $installer = Get-ChildItem -Path "${{ parameters.uhdInstallerDir }}" -Filter "uhd_*.exe" -File | Select-Object -First 1
+    Write-Host "Signing $($installer.FullName)"
+    & $LocalSignToolPath $installer.FullName $installer.FullName
+  displayName: Sign Windows installer
+  condition: and(succeeded(), eq(variables['attemptSigning'], 'true'))
+  target: host
+  timeoutInMinutes: 30
+
 - ${{if parameters.uhdBuildPythonAPI }}:
   - task: CopyFiles@2.246.0
     inputs:
       sourceFolder: ${{ parameters.uhdBuildDir }}
       contents: '**/dist/uhd-*.whl'
-      targetFolder: '$(Build.BinariesDirectory)/uhddev-installer'
+      targetFolder: '${{ parameters.uhdInstallerDir }}'
       flattenFolders: True
       cleanTargetFolder: ${{ parameters.cleanTargetFolder }}
     displayName: Copy Built Distribution (wheel) from Poetry build
@@ -117,7 +249,7 @@ steps:
     inputs:
       sourceFolder: ${{ parameters.uhdBuildDir }}
       contents: '**/dist/uhd-*.tar.gz'
-      targetFolder: '$(Build.BinariesDirectory)/uhddev-installer'
+      targetFolder: '${{ parameters.uhdInstallerDir }}'
       flattenFolders: True
       cleanTargetFolder: ${{ parameters.cleanTargetFolder }}
     displayName: Copy Source Distribution (tar.gz) from Poetry build

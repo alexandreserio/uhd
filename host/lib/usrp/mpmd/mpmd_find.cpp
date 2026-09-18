@@ -12,11 +12,15 @@
 #include <uhd/transport/if_addrs.hpp>
 #include <uhd/transport/udp_simple.hpp>
 #include <uhd/types/device_addr.hpp>
+#include <uhd/utils/cast.hpp>
 #include <uhdlib/asio.hpp>
+#include <uhdlib/utils/device_filter.hpp>
 #include <uhdlib/utils/prefs.hpp>
 #include <uhdlib/utils/serial_number.hpp>
 #include <boost/algorithm/string.hpp>
+#include <algorithm>
 #include <future>
+#include <iterator>
 #ifdef HAVE_DPDK
 #    include <uhdlib/transport/dpdk/common.hpp>
 #endif
@@ -29,8 +33,9 @@ namespace {
 constexpr double MPMD_FIND_TIMEOUT               = 0.5;
 constexpr char MPMD_CHDR_REACHABILITY_KEY[]      = "reachable";
 constexpr char MPMD_CHDR_REACHABILITY_NEGATIVE[] = "No";
-//! The preamble for any response on the discovery port. Can be used to
-//  verify that the response is actually an MPM device.
+/*! The preamble for any response on the discovery port. Can be used to
+ *  verify that the response is actually an MPM device.
+ */
 constexpr char MPM_DISC_RESPONSE_PREAMBLE[] = "USRP-MPM";
 
 device_addr_t flag_dev_as_unreachable(const device_addr_t& device_args)
@@ -112,6 +117,7 @@ device_addrs_t mpmd_find_with_addr(
                 new_addr[value[0]] = value[1];
             }
         }
+        new_addr[RPC_VERSION_KEY] = new_addr.get(RPC_VERSION_KEY, DEFAULT_RPC_VERSION);
         addrs.push_back(new_addr);
     }
     return addrs;
@@ -225,7 +231,7 @@ device_addrs_t mpmd_find(const device_addr_t& hint_)
         // Note: We don't try and connect to the devices in this mode, because
         // we only get here if the user specified addresses, and we assume she
         // knows what she's doing.
-        return mpmd_find_with_addrs(hints);
+        return device_filter::filter_device_addrs(mpmd_find_with_addrs(hints), hint_);
     }
 
     // Scenario 2): User gave us no address, and we need to broadcast
@@ -244,13 +250,49 @@ device_addrs_t mpmd_find(const device_addr_t& hint_)
     }
     // Filter found devices for those that we can actually talk to via CHDR
     device_addrs_t filtered_mpm_devs;
-    for (const auto& mpm_dev : bcast_mpm_devs) {
-        const auto reachable_device_addr = mpmd_mboard_impl::is_device_reachable(mpm_dev);
-        if (bool(reachable_device_addr)) {
-            filtered_mpm_devs.push_back(reachable_device_addr.get());
-        } else if (find_all) {
-            filtered_mpm_devs.emplace_back(flag_dev_as_unreachable(mpm_dev));
+
+    const bool check_reachability =
+        hint_.has_key("mpm_check_reachability") ? uhd::cast::from_str<bool>(
+            hint_.cast<std::string>("mpm_check_reachability", "Yes"))
+                                                : uhd::prefs::mpm_check_reachability();
+
+    UHD_LOG_DEBUG("MPMD FIND",
+        "Will " << (check_reachability ? "" : "not ")
+                << "check devices for reachability");
+
+    if (check_reachability) {
+        std::vector<std::future<std::optional<device_addr_t>>> reachability_tasks;
+        for (const auto& mpm_dev : bcast_mpm_devs) {
+            if (mpm_dev.get(RPC_VERSION_KEY, DEFAULT_RPC_VERSION) == RPC_VERSION) {
+                reachability_tasks.emplace_back(
+                    std::async(std::launch::async, [mpm_dev]() {
+                        return mpmd_mboard_impl::is_device_reachable(mpm_dev);
+                    }));
+            } else {
+                reachability_tasks.emplace_back(std::async(
+                    std::launch::async, []() { return std::optional<device_addr_t>{}; }));
+            }
         }
+        // Variable i is used to index reachability_tasks as well as bcast_mpm_devs (both
+        // of same size by construction), therefore using iterators here is less elegant.
+        for (size_t i = 0; i < reachability_tasks.size(); ++i) {
+            const auto reachable_device_addr = reachability_tasks[i].get();
+            if (bool(reachable_device_addr)) {
+                filtered_mpm_devs.push_back(reachable_device_addr.value());
+            } else if (find_all) {
+                filtered_mpm_devs.emplace_back(
+                    flag_dev_as_unreachable(bcast_mpm_devs[i]));
+            }
+        }
+    } else if (find_all) {
+        filtered_mpm_devs = bcast_mpm_devs;
+    } else {
+        std::copy_if(bcast_mpm_devs.cbegin(),
+            bcast_mpm_devs.cend(),
+            std::back_inserter(filtered_mpm_devs),
+            [](const device_addr_t& dev) {
+                return dev.get(RPC_VERSION_KEY, DEFAULT_RPC_VERSION) == RPC_VERSION;
+            });
     }
 
     if (filtered_mpm_devs.empty() and not bcast_mpm_devs.empty()) {
@@ -260,5 +302,5 @@ device_addrs_t mpmd_find(const device_addr_t& hint_)
                 << mpmd_impl::MPM_FINDALL_KEY << " to find all devices.");
     }
 
-    return filtered_mpm_devs;
+    return device_filter::filter_device_addrs(filtered_mpm_devs, hint_);
 }

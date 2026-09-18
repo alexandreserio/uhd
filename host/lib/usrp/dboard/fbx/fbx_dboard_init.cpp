@@ -20,7 +20,6 @@
 #include <uhdlib/usrp/dboard/fbx/fbx_constants.hpp>
 #include <uhdlib/usrp/dboard/fbx/fbx_dboard.hpp>
 #include <uhdlib/usrp/dboard/fbx/fbx_expert.hpp>
-#include <boost/algorithm/string.hpp>
 #include <sstream>
 #include <vector>
 
@@ -155,7 +154,6 @@ void fbx_dboard_impl::_init_experts(expert_container::sptr expert,
         trx,
         chan_idx,
         _rfdc_rate,
-        _rpc_prefix,
         _db_idx,
         _mb_rpcc);
 
@@ -176,7 +174,9 @@ void fbx_dboard_impl::_init_frequency_prop_tree(uhd::property_tree::sptr subtree
         subtree,
         fe_path / "los" / RFDC_NCO / "freq" / "value",
         // Initialize with current value
-        _mb_rpcc->rfdc_get_nco_freq(trx == TX_DIRECTION ? "tx" : "rx", _db_idx, chan_idx),
+        _mb_rpcc->get_dboard(_db_idx).rfdc_get_nco_freq(trx == TX_DIRECTION ? "tx" : "rx",
+            chan_idx,
+            static_cast<size_t>(FBX_CH_MODE)),
         AUTO_RESOLVE_ON_WRITE);
 
     subtree->create<double>(fe_path / "bandwidth" / "value")
@@ -259,7 +259,7 @@ void fbx_dboard_impl::_init_lo_prop_tree(uhd::property_tree::sptr subtree,
         })
         .set_publisher([this]() {
             return sensor_value_t(
-                RFDC_NCO, this->_rfdcc->get_nco_reset_done(), "locked", "unlocked");
+                RFDC_NCO, this->_rfdcc->get_nco_good(), "locked", "unlocked");
         });
 }
 }}} // namespace uhd::usrp::fbx

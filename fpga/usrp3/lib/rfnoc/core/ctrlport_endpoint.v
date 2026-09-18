@@ -1,33 +1,47 @@
 //
-// Copyright 2018-2019 Ettus Research, A National Instruments Company
+// Copyright 2026 Ettus Research, a National Instruments Brand
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 //
 // Module: ctrlport_endpoint
+//
 // Description:
-//   A bidirectional AXIS-Control to Control-Port converter.
-//   Use this module in noc_shell to interface between the user
-//   logic (using ctrlport) and the rfnoc infrastructure (axis_ctrl)
+//
+//   A bidirectional AXIS-Control to Control-Port converter. Use this module in
+//   noc_shell to interface between the user logic (using ctrlport) and the
+//   rfnoc infrastructure (axis_ctrl).
 //
 // Parameters:
-//   - THIS_PORTID: The 10-bit ID of the control XB port that is
-//                  connected to this converter.
-//   - SYNC_CLKS: Is rfnoc_ctrl_clk and ctrlport_clk the same clock?
-//   - AXIS_CTRL_MST_EN: Enable an AXIS-Ctrl master
-//   - AXIS_CTRL_SLV_EN: Enable an AXIS-Ctrl slave
-//   - SLAVE_FIFO_SIZE: FIFO depth for the slave port
+//
+//   THIS_PORTID        : The 10-bit ID of the control XB port that is
+//                        connected to this converter.
+//   SYNC_CLKS          : Is rfnoc_ctrl_clk and ctrlport_clk the same clock?
+//   AXIS_CTRL_MST_EN   : Enable an AXIS-Ctrl master
+//   AXIS_CTRL_SLV_EN   : Enable an AXIS-Ctrl slave
+//   SLAVE_FIFO_SIZE    : Log2 of FIFO depth for the slave port
+//   CTRL_OUT_FIFO_SIZE : Log2 of FIFO depth for the output port
+//   SKIP_WR_ACK_WAIT   : When set to 1, the AXIS-Ctrl master will ACK on
+//                        CtrlPort immediately without waiting for the
+//                        AXIS-Ctrl response for writes. This should NOT be
+//                        enabled when this endpoint also issues read requests.
+//                        Set to 0 to wait for the response, which is the
+//                        normal behavior.
 //
 // Signals:
+//
 //   - *_rfnoc_ctrl_* : Input/output AXIS-Control stream (AXI-Stream)
 //   - *_ctrlport_*   : Input/output control-port bus
+//
 
 module ctrlport_endpoint #(
-  parameter [9:0] THIS_PORTID       = 10'd0,
-  parameter       SYNC_CLKS         = 0,
-  parameter [0:0] AXIS_CTRL_MST_EN  = 1,
-  parameter [0:0] AXIS_CTRL_SLV_EN  = 1,
-  parameter       SLAVE_FIFO_SIZE   = 5
-)(
+  parameter [9:0] THIS_PORTID        = 10'd0,
+  parameter       SYNC_CLKS          = 0,
+  parameter [0:0] AXIS_CTRL_MST_EN   = 1,
+  parameter [0:0] AXIS_CTRL_SLV_EN   = 1,
+  parameter       SLAVE_FIFO_SIZE    = 5,
+  parameter       CTRL_OUT_FIFO_SIZE = 1,
+  parameter       SKIP_WR_ACK_WAIT   = 0
+) (
   // Clocks, Resets, Misc
   input  wire         rfnoc_ctrl_clk,
   input  wire         rfnoc_ctrl_rst,
@@ -97,7 +111,7 @@ module ctrlport_endpoint #(
         .space(), .occupied()
       );
 
-      axi_fifo #(.WIDTH(32+1), .SIZE(1)) out_fifo_i (
+      axi_fifo #(.WIDTH(32+1), .SIZE(CTRL_OUT_FIFO_SIZE)) out_fifo_i (
         .clk(ctrlport_clk), .reset(ctrlport_rst), .clear(1'b0),
         .i_tdata({o_ctrl_tlast, o_ctrl_tdata}),
         .i_tvalid(o_ctrl_tvalid), .i_tready(o_ctrl_tready),
@@ -116,7 +130,7 @@ module ctrlport_endpoint #(
         .o_tvalid(i_ctrl_tvalid), .o_tready(i_ctrl_tready)
       );
 
-      axi_fifo_2clk #(.WIDTH(32+1), .SIZE(1), .PIPELINE("OUT")) out_fifo_i (
+      axi_fifo_2clk #(.WIDTH(32+1), .SIZE(CTRL_OUT_FIFO_SIZE), .PIPELINE("OUT")) out_fifo_i (
         .reset(ctrlport_rst),
         .i_aclk(ctrlport_clk),
         .i_tdata({o_ctrl_tlast, o_ctrl_tdata}),
@@ -207,7 +221,10 @@ module ctrlport_endpoint #(
 
   generate
     if (AXIS_CTRL_MST_EN == 1'b1) begin : gen_ctrl_master
-      axis_ctrl_master #( .THIS_PORTID(THIS_PORTID) ) axis_ctrl_mst_i (
+      axis_ctrl_master #(
+        .THIS_PORTID     (THIS_PORTID),
+        .SKIP_WR_ACK_WAIT(SKIP_WR_ACK_WAIT)
+      ) axis_ctrl_mst_i (
         .clk                    (ctrlport_clk),
         .rst                    (ctrlport_rst),
         .s_axis_ctrl_tdata      (mst_resp_tdata),

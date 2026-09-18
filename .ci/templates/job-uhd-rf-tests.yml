@@ -13,6 +13,7 @@ parameters:
   type: string
 - name: redisHost
   type: string
+  default: ''
 - name: dutMatrix
   type: object
 - name: vivado_dir
@@ -195,8 +196,9 @@ jobs:
     condition: and(eq(variables.supportsCorrections, true), ne(variables.db1Serial, ''))
 
   - script: |
-      mkdir -p $(Common.TestResultsDirectory)/pytest
-      cd $(Common.TestResultsDirectory)/pytest
+      mkdir -p $(Common.TestResultsDirectory)/pytest/rf$(devFpga)
+      mkdir -p $(Common.TestResultsDirectory)/pytest/non_rf$(devFpga)
+      cd $(Common.TestResultsDirectory)
 
       export UHD_INSTALL_PATH=$(uhd_artifact_directory)/uhddev-$(testOS)-${{ parameters.toolset }}/uhddev/build-installed
       export GNURADIO_GRETTUS_INSTALL_PATH=$(uhd_artifact_directory)/gnuradio-grettus-$(testOS)-${{ parameters.toolset }}/gnuradio/build-installed
@@ -223,53 +225,98 @@ jobs:
       fi
 
       source $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/setup_venv.sh
+      python3 -m pip install --upgrade pip
       pip3 install -r $(Build.SourcesDirectory)/uhddev/.ci/utils/requirements_312.txt
 
+      cd "$(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests"
+      rf_test_status=0
+      non_rf_test_status=0
       if [ "$(devType)" = "n3xx" ]; then
         python3 ${{ parameters.uhdSrcDir }}/.ci/utils/mutex_hardware.py \
           --sdimage_sdmux $(devType),$(devModel),$(uhd_artifact_directory)/$(devType)-images/$(devSDImage),$(Build.SourcesDirectory)/ettus-rts/$(devLabgridConfig),$(devHostname) \
           --fpgas $(devFpga) \
           --sfp_addrs $(sfpAddrs) \
-          --working_dir "$(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests/" \
           "${{ parameters.redisHost }}" "$(devName)" \
           "uhd_usrp_probe --args addr=$(devAddr)" \
           "python3 ../automated_main.py --ats_config $(pytestAtsConfig) --dut $(pytestDUT) \
-            --results_path $(Common.TestResultsDirectory)/pytest/{fpga} ${{ parameters.extra_rf_test_args }}"
+            --test_selector $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests \
+            --results_path $(Common.TestResultsDirectory)/pytest/rf/$(devFpga) \
+            $(parameters.extra_rf_test_args)" || rf_test_status=$?
       elif [ "$(devType)" = "x300" ]; then
-        cd $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests
         python3 ${{ parameters.uhdSrcDir }}/.ci/utils/mutex_hardware.py \
           --jtag_x3xx $(devType),$(devModel),$(jtagServer),$(jtagSerial),$(Build.BinariesDirectory)/uhddev/build/fpga_images/,${{ parameters.vivado_dir }} \
           --fpgas $(devFpga) \
           --sfp_addrs $(sfpAddrs) \
-          --working_dir "$(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests/" \
           "${{ parameters.redisHost }}" "$(devName)" \
           "uhd_usrp_probe --args addr=$(devAddr)" \
           "python3 ../automated_main.py --ats_config $(pytestAtsConfig) --dut $(pytestDUT) \
-            --results_path $(Common.TestResultsDirectory)/pytest/{fpga} ${{ parameters.extra_rf_test_args }}"
+            --test_selector $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests \
+            --results_path $(Common.TestResultsDirectory)/pytest/rf/$(devFpga) \
+            $(parameters.extra_rf_test_args)" || rf_test_status=$?
+      elif [ "$(devType)" = "b3xx" ]; then
+        cd $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests
+        uhd_image_loader --args type=$(devType),serial=$(devSerial)
+        sleep 10
+        export UHD_IMAGES_DIR=$HOME/adrv9032_images
+        uhd_usrp_probe --args type=$(devType),serial=$(devSerial)
+        python3 ../automated_main.py --ats_config $(pytestAtsConfig) --dut $(pytestDUT) \
+          --results_path $(Common.TestResultsDirectory)/pytest/rf/$(devFpga) ${{ parameters.extra_rf_test_args }} || rf_test_status=$?
+        cd $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests
       fi
+      python3 automated_main.py --ats_config $(pytestAtsConfig) --dut $(pytestDUT) \
+        --test_selector $(Build.SourcesDirectory)/ettus-rts/config/remote/python_tests/pytests_non_rf \
+        --results_path $(Common.TestResultsDirectory)/pytest/non_rf/$(devFpga) \
+        ${{ parameters.extra_rf_test_args }} || non_rf_test_status=$?
+
+      if [ $rf_test_status -ne 0 ] || [ $non_rf_test_status -ne 0 ]; then
+        echo "At least one pytest invocation failed (rf=$rf_test_status, non_rf=$non_rf_test_status)."
+        exit 1
+      fi
+
     continueOnError: true
     condition: succeeded()
     displayName: Run pytests on $(devName)
 
   - script: |
-      cd $(Common.TestResultsDirectory)/devtest
       python3 ${{ parameters.uhdSrcDir }}/.ci/utils/format_devtest_junitxml.py \
         --fpgas $(devFpga) \
-        $(Common.TestResultsDirectory)/pytest \
-        $(Common.TestResultsDirectory)/pytest/pytestresults.xml
+        $(Common.TestResultsDirectory)/pytest/rf \
+        $(Common.TestResultsDirectory)/pytest/pytestresults_rf.xml
     continueOnError: true
-    displayName: Format devtest xml
     condition: always()
+    displayName: Format RF pytest xml
+
+  - script: |
+      python3 ${{ parameters.uhdSrcDir }}/.ci/utils/format_devtest_junitxml.py \
+        --fpgas $(devFpga) \
+        $(Common.TestResultsDirectory)/pytest/non_rf \
+        $(Common.TestResultsDirectory)/pytest/pytestresults_non_rf.xml
+    continueOnError: true
+    condition: always()
+    displayName: Format non-RF pytest xml
+    
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '$(Common.TestResultsDirectory)/pytest/pytestresults_rf.xml'
+      testRunTitle: $(devName) RF pytest
+      buildConfiguration: 'Release'
+    condition: always()
+    displayName: Upload RF pytest results
 
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: 'JUnit'
-      testResultsFiles: '$(Common.TestResultsDirectory)/pytest/pytestresults.xml'
-      testRunTitle: $(devName) pytest
+      testResultsFiles: '$(Common.TestResultsDirectory)/pytest/pytestresults_non_rf.xml'
+      testRunTitle: $(devName) non-RF pytest
       buildConfiguration: 'Release'
-      mergeTestResults: true
     condition: always()
-    displayName: Upload pytest results
+    displayName: Upload non-RF pytest results 
+    
+  - publish: $(Common.TestResultsDirectory)
+    artifact: test-logs-rf-hardware-$(devName)-run$(System.JobAttempt)
+    displayName: Upload Test Logs
+    condition: always()
 
   - script: |
       echo "A previous step failed. See steps with warnings."
@@ -277,3 +324,12 @@ jobs:
       exit 1
     condition: in(variables['Agent.JobStatus'],  'SucceededWithIssues')
     displayName: Mark build as failure
+
+  - script: |
+      if [ -z "${{ parameters.redisHost }}" ]; then
+        echo "No redis host specified, skipping lock release."
+      else
+        redis-cli -h ${{ parameters.redisHost }} DEL redlock:$(devName)
+      fi
+    displayName: Release redis lock
+    condition: always()

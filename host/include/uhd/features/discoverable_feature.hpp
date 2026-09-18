@@ -27,8 +27,9 @@ class UHD_API discoverable_feature
 public:
     using sptr = std::shared_ptr<discoverable_feature>;
 
-    //! An enum of all features supported by the driver. When creating a new
-    // feature, you should add an entry to this enum.
+    /*! An enum of all features supported by the driver. When creating a new
+     * feature, you should add an entry to this enum.
+     */
     enum feature_id_t {
         RESERVED0,
         RESERVED1,
@@ -39,7 +40,9 @@ public:
         GPIO_POWER,
         SPI_GETTER_IFACE,
         INTERNAL_SYNC,
-        GPS
+        GPS,
+        TX_COMPLEX_GAIN,
+        RX_COMPLEX_GAIN
     };
 
     virtual ~discoverable_feature() = default;

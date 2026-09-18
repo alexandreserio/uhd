@@ -21,8 +21,9 @@ then
     echo "This script must be run from UHD's top-level directory."
     exit 1
 fi
-if [ -f fpga-src/README.md ]; then
-    echo "This script requires a clean repository without fpga-src checked out!."
+
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+    echo "This script requires a clean repository!"
     exit 1
 fi
 
@@ -45,7 +46,7 @@ ORIG_RELEASE=`head -1 host/cmake/debian/changelog | sed 's/.*) \(.*\);.*/\1/'`
 # Currently supported versions can be found here:
 # https://launchpad.net/ubuntu/+ppas
 #
-RELEASES="focal jammy noble plucky"
+RELEASES="jammy noble resolute"
 PPA=ppa:ettusresearch/uhd
 
 #
@@ -70,7 +71,7 @@ fi
 # or are unnecessary for Debian builds
 rm -rf ${UHD_TOP_LEVEL}/../uhd-${VERSION}
 mkdir ${UHD_TOP_LEVEL}/../uhd-${VERSION}
-rsync --exclude='.git*' --exclude='/debian/' --exclude='*.swp' --exclude='/fpga-src/' --exclude='/build' --exclude='/images/*.pyc' --exclude='/images/uhd-*' --exclude='tags' --exclude='/host/cmake/msvc/' --exclude='/host/cmake/vcpkg/' --exclude='/fpga/' -a  ${UHD_TOP_LEVEL}/ ${UHD_TOP_LEVEL}/../uhd-${VERSION}/
+rsync --exclude='.git' --exclude='.ci' --exclude='.git*' --exclude='.clang*' --exclude='/debian/' --exclude='*.swp' --exclude='/fpga-src/' --exclude='/build' --exclude='/images/*.pyc' --exclude='/images/uhd-*' --exclude='tags' --exclude='/host/cmake/msvc/' --exclude='/host/cmake/vcpkg/' --exclude='/fpga/usrp1' --exclude='/fpga/usrp2' --exclude='/fpga/usrp3/top/b200' --exclude='/fpga/usrp3/top/b2xxmini' --exclude='/fpga/usrp3/lib/*_200' -a  ${UHD_TOP_LEVEL}/ ${UHD_TOP_LEVEL}/../uhd-${VERSION}/
 if [ $? != 0 ]
 then
     echo "Failed to copy UHD source."
@@ -94,11 +95,6 @@ fi
 # create package info for each version. We need to store the original outside the
 # UHD repo, or dpkg-source will detect the change and error out.
 #
-cp -r host/cmake/debian .
-cp host/utils/uhd-usrp.rules debian/uhd-host.udev
-find host/docs -name '*.1' > debian/uhd-host.manpages
-rm -f debian/postinst.in debian/postrm.in debian/preinst.in debian/prerm.in
-
 if [ $FORCE_YES -ne 1 ]
 then
     echo "Proceed to generate package info? (yes/no)"
@@ -111,6 +107,16 @@ fi
 
 for RELEASE in ${RELEASES}
 do
+    rm -rf debian
+    cp -r ${UHD_TOP_LEVEL}/host/cmake/debian .
+    if [ -f debian/control.${RELEASE} ]
+    then
+        cp debian/control.${RELEASE} debian/control
+    fi
+    rm -f debian/control.*
+    cp host/utils/uhd-usrp.rules debian/uhd-host.udev
+    find host/docs -name '*.1' > debian/uhd-host.manpages
+    rm -f debian/postinst.in debian/postrm.in debian/preinst.in debian/prerm.in
     cp debian/changelog ../changelog.backup
     sed -i "s/${ORIG_RELEASE}/${RELEASE}/;s/0ubuntu1/0ubuntu1~${RELEASE}1/" debian/changelog
     debuild -S -i -sa

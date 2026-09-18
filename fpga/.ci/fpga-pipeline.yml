@@ -41,6 +41,10 @@ parameters:
   type: boolean
   displayName: Build X410
   default: false
+- name: build_x420
+  type: boolean
+  displayName: Build X420
+  default: false
 - name: build_x440
   type: boolean
   displayName: Build X440
@@ -52,6 +56,10 @@ parameters:
 - name: build_regmaps
   type: boolean
   displayName: Build Register Maps
+  default: false
+- name: build_usrp4
+  type: boolean
+  displayName: Execute Usrp4-hw stage
   default: false
 - name: package_and_publish_images
   type: boolean
@@ -69,6 +77,14 @@ parameters:
   displayName: X410 Targets
   type: object
   default:
+    X410_X4_100:
+      image_core: x410_X4_100_rfnoc_image_core.yml
+      image_core_name: usrp_x410_fpga_X4_100
+      target_name: X410
+      artifact_name: X410_X4_100
+      timeout: 720
+      attempt_timeout: 360
+      max_attempts: 2
     X410_X4_200:
       image_core: x410_X4_200_rfnoc_image_core.yml
       image_core_name: usrp_x410_fpga_X4_200
@@ -101,6 +117,46 @@ parameters:
       timeout: 720
       attempt_timeout: 360
       max_attempts: 2
+# Requested X420 targets
+- name: x420_targets_matrix
+  type: object
+  displayName: X420 Targets
+  default:
+    X420_CG_1000:
+      image_core: x420_CG_1000_rfnoc_image_core.yml
+      image_core_name: usrp_x420_fpga_CG_1000
+      target_name: X420
+      artifact_name: X420_CG_1000
+      timeout: 720
+      max_attempts: 2
+    X420_X4_1000:
+      image_core: x420_X4_1000_rfnoc_image_core.yml
+      image_core_name: usrp_x420_fpga_X4_1000
+      target_name: X420
+      artifact_name: X420_X4_1000
+      timeout: 720
+      max_attempts: 2
+    X420_CG_400:
+      image_core: x420_CG_400_rfnoc_image_core.yml
+      image_core_name: usrp_x420_fpga_CG_400
+      target_name: X420
+      artifact_name: X420_CG_400
+      timeout: 720
+      max_attempts: 2
+    X420_X4_400:
+      image_core: x420_X4_400_rfnoc_image_core.yml
+      image_core_name: usrp_x420_fpga_X4_400
+      target_name: X420
+      artifact_name: X420_X4_400
+      timeout: 720
+      max_attempts: 2
+    X420_X4_200:
+      image_core: x420_X4_200_rfnoc_image_core.yml
+      image_core_name: usrp_x420_fpga_X4_200
+      target_name: X420
+      artifact_name: X420_X4_200
+      timeout: 720
+      max_attempts: 2
 - name: x440_targets_matrix
   displayName: X440 Targets
   type: object
@@ -111,6 +167,14 @@ parameters:
       target_name: X440
       artifact_name: X440_CG_1600
       timeout: 720
+      attempt_timeout: 360
+      max_attempts: 2
+    X440_CG_800:
+      image_core: x440_CG_800_rfnoc_image_core.yml
+      image_core_name: usrp_x440_fpga_CG_800
+      target_name: X440
+      artifact_name: X440_CG_800
+      timeout: 1080
       attempt_timeout: 360
       max_attempts: 2
     X440_CG_400:
@@ -126,6 +190,14 @@ parameters:
       image_core_name: usrp_x440_fpga_X4_1600
       target_name: X440
       artifact_name: X440_X4_1600
+      timeout: 720
+      attempt_timeout: 360
+      max_attempts: 2
+    X440_X4_800:
+      image_core: x440_X4_800_rfnoc_image_core.yml
+      image_core_name: usrp_x440_fpga_X4_800
+      target_name: X440
+      artifact_name: X440_X4_800
       timeout: 720
       attempt_timeout: 360
       max_attempts: 2
@@ -145,6 +217,14 @@ parameters:
       timeout: 720
       attempt_timeout: 360
       max_attempts: 2
+    X440_X1_200:
+      image_core: x440_X1_200_rfnoc_image_core.yml
+      image_core_name: usrp_x440_fpga_X1_200
+      target_name: X440
+      artifact_name: X440_X1_200
+      timeout: 720
+      attempt_timeout: 360
+      max_attempts: 2
 
 trigger: none
 pr: none
@@ -154,16 +234,18 @@ extends:
   parameters:
     add_tests: ${{
         format(
-          '{0};{1};{2};{3};{4};{5};{6};{7};{8};',
+          '{0};{1};{2};{3};{4};{5};{6};{7};{8};{9};{10};',
           iif(parameters.run_testbenches,'fpga.usrp3.testbenches',''),
           iif(parameters.build_x3x0,'fpga.usrp3.x3xx',''),
           iif(parameters.build_n3xx,'fpga.usrp3.n3xx',''),
           iif(parameters.build_e31x,'fpga.usrp3.e31x',''),
           iif(parameters.build_e320,'fpga.usrp3.e320',''),
           iif(parameters.build_x410,'fpga.usrp3.x410',''),
+          iif(parameters.build_x420,'fpga.usrp3.x420',''),
           iif(parameters.build_x440,'fpga.usrp3.x440',''),
           iif(parameters.build_x4xx_cplds,'fpga.usrp3.cpld.x4xx',''),
-          iif(parameters.build_regmaps,'fpga.usrp3.regmaps','')
+          iif(parameters.build_regmaps,'fpga.usrp3.regmaps',''),
+          iif(parameters.build_usrp4,'fpga.usrp4-hw','')
         )
       }}
     skip_rule_checking: true
@@ -171,6 +253,7 @@ extends:
     clean_ip_build: ${{ parameters.clean_ip_build }}
     publish_int_files: true
     x410_targets_matrix: ${{ parameters.x410_targets_matrix }}
+    x420_targets_matrix: ${{ parameters.x420_targets_matrix }}
     x440_targets_matrix: ${{ parameters.x440_targets_matrix }}
     package_and_publish_images: ${{ parameters.package_and_publish_images }}
     package_access: ${{ parameters.package_access }}

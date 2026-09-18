@@ -13,6 +13,12 @@ parameters:
   NUM_PORTS: 2
   NIPC: ${ config.device.parameters.get("RADIO_NIPC", 1) }
   ITEM_W: 32
+  EN_COMP_GAIN_TX: 0
+  EN_COMP_GAIN_RX: 0
+  EN_FIFO_OUT_REG: 0
+  SKIP_WR_ACK_WAIT: 0
+  CTRL_FIFO_SIZE: 512
+  CTRL_OUT_FIFO_SIZE: 2
 
 checks:
   - condition: "${parameters['NUM_PORTS'] > 0}"
@@ -31,7 +37,8 @@ clocks:
 control:
   fpga_iface: ctrlport
   interface_direction: remote_master_slave
-  fifo_depth: 512
+  fifo_depth: CTRL_FIFO_SIZE
+  output_fifo_depth: CTRL_OUT_FIFO_SIZE
   clk_domain: radio
   ctrlport:
     byte_mode: True
@@ -84,6 +91,11 @@ io_ports:
       spc: "${parameters['NIPC']}"
       num_ports: "${parameters['NUM_PORTS']}"
     required: true # Definitely required!
+  radio_state:
+    type: radio_state
+    drive: broadcaster
+    parameters:
+      num_ports: "${parameters['NUM_PORTS']}"
 
 # This section helps the make process find the source files for the block. If
 # this section is absent, the FPGA build process will fail as it won't be able

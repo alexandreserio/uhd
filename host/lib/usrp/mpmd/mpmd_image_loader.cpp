@@ -21,11 +21,12 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/archive/iterators/binary_from_base64.hpp>
 #include <boost/archive/iterators/transform_width.hpp>
-#include <boost/optional.hpp>
 #include <boost/property_tree/xml_parser.hpp>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,7 @@ uhd::usrp::component_file_t generate_component(
     // Add the filename to the metadata
     // Remove the path to the filename
     component_file.metadata["filename"] =
-        boost::filesystem::path(filepath).filename().string();
+        std::filesystem::path(filepath).filename().string();
     UHD_LOG_TRACE("MPMD IMAGE LOADER",
         "Component filename added to the component dictionary: " << filepath);
     // Add the hash, if a hash file exists
@@ -104,7 +105,7 @@ uhd::usrp::component_file_t generate_component(const std::string& id,
     return component_file;
 }
 
-boost::optional<std::vector<uint8_t>> parse_dts_from_lvbitx(
+std::optional<std::vector<uint8_t>> parse_dts_from_lvbitx(
     const boost::property_tree::ptree& pt)
 {
     std::string dts;
@@ -114,7 +115,7 @@ boost::optional<std::vector<uint8_t>> parse_dts_from_lvbitx(
     } catch (boost::property_tree::ptree_error&) {
         UHD_LOG_WARNING(
             "MPMD IMAGE LOADER", "Could not find DTS in .lvbitx file, not including it");
-        return boost::none;
+        return std::nullopt;
     }
 
     if (dts.size() % 2 != 0) {
@@ -164,7 +165,7 @@ static std::string get_fpga_path(
 {
     // If the user provided a path to an fpga image, use that
     if (not image_loader_args.fpga_path.empty()) {
-        if (boost::filesystem::exists(image_loader_args.fpga_path)) {
+        if (std::filesystem::exists(image_loader_args.fpga_path)) {
             return image_loader_args.fpga_path;
         } else {
             throw uhd::runtime_error(
@@ -201,14 +202,17 @@ static std::string get_fpga_path(
         if (!dev_addr.has_key("product")) {
             throw uhd::runtime_error("Found a device but could not "
                                      "auto-generate an image filename.");
-        } else if (fpga_type.empty()) {
-            return find_image_path("usrp_"
-                                   + boost::algorithm::to_lower_copy(dev_addr["product"])
-                                   + "_fpga.bit");
         } else {
-            return find_image_path("usrp_"
-                                   + boost::algorithm::to_lower_copy(dev_addr["product"])
-                                   + "_fpga_" + fpga_type + ".bit");
+            std::string base_name =
+                "usrp_" + boost::algorithm::to_lower_copy(dev_addr["product"]) + "_fpga";
+            std::string type_name = fpga_type.empty() ? "" : "_" + fpga_type;
+            std::string image_path;
+            try {
+                image_path = find_image_path(base_name + type_name + ".bin");
+            } catch (const uhd::io_error&) {
+                image_path = find_image_path(base_name + type_name + ".bit");
+            }
+            return image_path;
         }
     }
 }
@@ -238,7 +242,7 @@ static uhd::usrp::component_files_t lvbitx_to_component_files(
 
     const auto maybe_dts = parse_dts_from_lvbitx(pt);
     if (maybe_dts) {
-        const auto dts = maybe_dts.get();
+        const auto dts = maybe_dts.value();
 
         uhd::dict<std::string, std::string> dts_metadata;
         dts_metadata.set("filename", "usrp_x410_fpga_LV.dts");
@@ -268,7 +272,7 @@ static uhd::usrp::component_files_t bin_dts_to_component_files(
     // DTS component struct
     // First, we need to determine the name
     const std::string base_name =
-        boost::filesystem::path(fpga_path).replace_extension("").string();
+        std::filesystem::path(fpga_path).replace_extension("").string();
     if (base_name == fpga_path) {
         const std::string err_msg(
             "Can't cut extension from FPGA filename... " + fpga_path);
@@ -337,7 +341,7 @@ static void mpmd_send_fpga_to_device(
         UHD_LOG_TRACE("MPMD IMAGE LOADER", "FPGA path: " << fpga_path);
 
         // If the fpga_path is a lvbitx file, parse it as such
-        if (boost::filesystem::path(fpga_path).extension() == ".lvbitx") {
+        if (std::filesystem::path(fpga_path).extension() == ".lvbitx") {
             all_component_files = lvbitx_to_component_files(fpga_path, delay_reload);
         } else {
             all_component_files = bin_dts_to_component_files(fpga_path, delay_reload);

@@ -15,10 +15,10 @@ parameters:
   type: boolean
   displayName: Run Streaming Tests
   default: false
-- name: run_x440_streaming_tests
-  type: boolean
-  displayName: Run X440 Streaming Tests
-  default: false
+- name: selected_streaming_tests
+  type: string
+  displayName: Streaming Tests Multi-Select (comma-separated)
+  default: 'B206,B210,B310,X310_XG,X410_CG_400,X410_UC_200,X440_CG_400,X440_CG_1600'
 - name: run_devtests
   type: boolean
   displayName: Run devtests
@@ -39,6 +39,10 @@ parameters:
   type: boolean
   displayName: Run X410 RF tests
   default: false
+- name: run_x420_rf_tests
+  type: boolean
+  displayName: Run X420 RF tests
+  default: false
 - name: run_x440_rf_tests
   type: boolean
   displayName: Run X440 RF tests
@@ -46,6 +50,18 @@ parameters:
 - name: run_x440_phase_tests
   type: boolean
   displayName: Run X440 Phase tests
+  default: false
+- name: run_lv_test
+  type: boolean
+  displayName: Run LabVIEW test
+  default: false
+- name: run_b310_devtests
+  type: boolean
+  displayName: Run B310 devtests
+  default: false
+- name: run_b310_rf_tests
+  type: boolean
+  displayName: Run B310 RF tests
   default: false
 - name: fpga_imgs_source
   type: string
@@ -66,11 +82,12 @@ parameters:
   - 'smoke'
   - 'full'
   - 'stress'
-- name: dpdkDirs
+- name: dpdkVersions
   type: object
   default:
-  - '/opt/dpdk-19.11'
-  - '/opt/dpdk-23.11'
+  - '21.11'
+  - '23.11'
+  - '25.11'
 - name: x300_fpga_matrix
   type: object
   default:
@@ -119,6 +136,14 @@ parameters:
       run: true
     X440_CG_1600:
       run: true
+- name: uploadSbomArtifacts
+  type: boolean
+  displayName: Publish SBOMs to DepTrack
+  default: false
+- name: sbomExclFromUpload
+  type: string
+  displayName: Don't upload listed SBOMs (space-separated list of image names)
+  default: ' '
 
 variables:
 - name: uhdFpgaArtifactSource
@@ -144,7 +169,7 @@ resources:
     branch: master
   - pipeline: usrp-kas-pipeline
     source: 'usrp-kas'
-    branch: kirkstone
+    branch: scarthgap
   # Keep this for now, but it should be removed once the mono pipeline is
   # fully populated.
   - pipeline: uhd_fpga_pipeline
@@ -155,7 +180,7 @@ resources:
     type: github
     name: EttusResearch/meta-ettus-dev
     endpoint: EttusResearch
-    ref: kirkstone
+    ref: scarthgap
   - repository: gr-ettus
     type: github
     name: EttusResearch/gr-ettusdev
@@ -166,10 +191,11 @@ resources:
     endpoint: EttusResearch
     name: EttusResearch/ettus-rts
     ref: master
-  - repository: hwtools
-    type: git
-    ref: refs/tags/pip/hwsetup/0.1/0.1.3
-    name: DevCentral/hwtools
+  - repository: labview-usrp-examples
+    type: github
+    endpoint: EttusResearch
+    name: ni/labview-usrp-examples
+    ref: main
 
 stages:
 - stage: test_uhd_x410_embedded_stage
@@ -194,38 +220,19 @@ stages:
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       fpga_imgs_source: ${{ variables.fpga_imgs_source }}
 
-- stage: test_streaming_stage
-  displayName: Test UHD Streaming
+- stage: stage_uhd_streaming_tests
+  displayName: UHD Streaming Tests
   dependsOn: []
   condition: ${{ parameters.run_streaming_tests }}
   jobs:
-  - template: templates/job-uhd-streaming-tests-beauty.yml
+  - template: templates/job-uhd-streaming-tests.yml
     parameters:
       uhdSrcDir: $(Build.SourcesDirectory)/uhddev
       uhdArtifactSource: uhd_mono_pipeline
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       testLength: ${{ parameters.testLength }}
-      dpdkDirs: '${{ parameters.dpdkDirs }}'
-  - template: templates/job-uhd-streaming-tests-s175.yml
-    parameters:
-      uhdSrcDir: $(Build.SourcesDirectory)/uhddev
-      uhdArtifactSource: uhd_mono_pipeline
-      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
-      testLength: ${{ parameters.testLength }}
-      dpdkDirs: '${{ parameters.dpdkDirs }}'
-
-- stage: test_x440_streaming_stage
-  displayName: Test X440 Streaming
-  dependsOn: []
-  condition: ${{ parameters.run_x440_streaming_tests }}
-  jobs:
-  - template: templates/job-uhd-streaming-tests-x440.yml
-    parameters:
-      uhdSrcDir: $(Build.SourcesDirectory)/uhddev
-      uhdArtifactSource: uhd_mono_pipeline
-      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
-      testLength: ${{ parameters.testLength }}
-      dpdkDirs: '${{ parameters.dpdkDirs }}'
+      dpdkVersions: ${{ parameters.dpdkVersions }}
+      selectedTests: ${{ split(replace(parameters.selected_streaming_tests, ' ', ''), ',') }}
 
 - stage: test_uhd_devtest
   displayName: Test UHD Devtest
@@ -283,6 +290,31 @@ stages:
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       fpga_imgs_source: ${{ variables.fpga_imgs_source }}
 
+- stage: test_b310_rf_tests
+  displayName: Test B310 RF Tests
+  dependsOn: []
+  condition: ${{ parameters.run_b310_rf_tests }}
+  jobs:
+  - template: templates/job-uhd-rf-tests-b310.yml
+    parameters:
+      uhdSrcDir: $(Build.SourcesDirectory)/uhddev
+      uhdArtifactSource: uhd_mono_pipeline
+      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
+      fpga_imgs_source: ${{ variables.fpga_imgs_source }}
+      extra_rf_test_args: ${{ parameters.extra_rf_test_args }}
+
+- stage: test_b310_devtest
+  displayName: Test B310 Devtest
+  dependsOn: []
+  condition: ${{ parameters.run_b310_devtests }}
+  jobs:
+  - template: templates/job-uhd-devtest-b310.yml
+    parameters:
+      uhdSrcDir: $(Build.SourcesDirectory)
+      uhdArtifactSource: uhd_mono_pipeline
+      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
+      fpga_imgs_source: ${{ variables.fpga_imgs_source }}
+
 - stage: test_x410_rf_tests
   displayName: Run X410 RF tests
   dependsOn: []
@@ -293,9 +325,22 @@ stages:
       uhdArtifactSource: uhd_mono_pipeline
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       fpga_imgs_source: ${{ variables.fpga_imgs_source }}
+      runX410X4400RfSubset: true
       extra_rf_test_args: ${{ parameters.extra_rf_test_args }}
       testLength: ${{ parameters.testLength }}
 
+- stage: test_x420_rf_tests
+  displayName: Run X420 RF tests
+  dependsOn: []
+  condition: ${{ parameters.run_x420_rf_tests }}
+  jobs:
+  - template: templates/tests/job-uhd-x420-hardware-tests-s175.yml
+    parameters:
+      uhdArtifactSource: uhd_mono_pipeline
+      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
+      fpga_imgs_source: ${{ variables.fpga_imgs_source }}
+      extra_rf_test_args: ${{ parameters.extra_rf_test_args }}
+      testLength: ${{ parameters.testLength }}
 
 - stage: test_x440_rf_tests
   displayName: Run X440 RF tests
@@ -325,3 +370,20 @@ stages:
       ${{ else }}:
         extra_rf_test_args: ${{ parameters.extra_rf_test_args }} --test_selector test_rx_phase_coherence.py test_tx_phase_coherence.py
       testLength: ${{ parameters.testLength }}
+
+- stage: test_labview_usrp_examples
+  displayName: Test LabVIEW USRP Examples
+  dependsOn: []
+  condition: ${{ parameters.run_lv_test }}
+  jobs:
+  - template: templates/job-uhd-usrp-tests-uhdlvtest.yml
+    parameters:
+      uhdArtifactSource: uhd_mono_pipeline
+      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
+
+- ${{ if eq(parameters.uploadSbomArtifacts, true) }}:
+  - template: .ci/templates/stages-nisbom-uploads.yml@ettus-rts
+    parameters:
+      sbomExclFromUpload: ${{ parameters.sbomExclFromUpload }}
+      uhdArtifactSource: uhd_mono_pipeline
+      releaseBinaries: false

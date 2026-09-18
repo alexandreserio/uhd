@@ -303,7 +303,7 @@ if(CYGWIN)
 endif(CYGWIN)
 
 if(WIN32)
-    add_definitions(-D_WIN32_WINNT=0x0501) # minimum version required is windows xp
+    add_definitions(-D_WIN32_WINNT=0x0600) # minimum version required is windows vista (required by gRPC)
     add_definitions(-DNOMINMAX) # disables stupidity and enables std::min and std::max
 endif(WIN32)
 
@@ -316,15 +316,23 @@ message(STATUS "Configuring Boost C++ Libraries...")
 # NO optional Boost components!
 # ALL required Boost components!
 set(UHD_BOOST_REQUIRED_COMPONENTS
-    chrono
-    date_time
     filesystem
+    # Only used by utils and examples, not libuhd:
     program_options
+    # Only used by nirio driver inside libuhd:
     serialization
     #system Boost.System is used, but explicitly listing it causes errors on some systems.
-    thread
-    unit_test_framework
+    #unit_test_framework Boost.Test is used, but listing it here causes problems when
+    #                    using static linking (the  Windows default).
+    #                    Package detection for 'Boost::unit_test_framework' is handled
+    #                    separately in UHDBoost.cmake to work around this issue.
 )
+if(MSVC)
+    # Appending Boost::regex, required on Windows.
+    # (variablee also used in lib/CMakeLists.txt)
+    set(UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS regex)
+endif(MSVC)
+list(APPEND UHD_BOOST_REQUIRED_COMPONENTS ${UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS})
 
 include(UHDBoost)
 

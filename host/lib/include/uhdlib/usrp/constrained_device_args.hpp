@@ -117,7 +117,7 @@ public: // Types
         inline void parse(const std::string& str_rep)
         {
             try {
-                _value = boost::lexical_cast<data_t>(str_rep);
+                _value = uhd::cast::from_str<data_t>(str_rep);
             } catch (std::exception& ex) {
                 throw uhd::value_error(
                     str(boost::format("Error parsing numeric parameter %s: %s.") % key()
@@ -304,8 +304,9 @@ protected: // Methods
         }
     }
 
-    //! Helper for enum_arg: Create a new map where keys are converted to
-    //  lowercase.
+    /*! Helper for enum_arg: Create a new map where keys are converted to
+     *  lowercase.
+     */
     template <typename enum_t>
     static std::unordered_map<std::string, enum_t> _enum_map_to_lowercase(
         const std::unordered_map<std::string, enum_t>& in_map)

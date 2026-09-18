@@ -17,9 +17,8 @@
 #include <uhd/usrp/zbx_tune_map_item.hpp>
 #include <uhdlib/rfnoc/rf_control/gain_profile_iface.hpp>
 #include <uhdlib/usrp/common/pwr_cal_mgr.hpp>
-#include <uhdlib/usrp/common/rpc.hpp>
 #include <uhdlib/usrp/common/x400_rfdc_control.hpp>
-#include <uhdlib/utils/rpc.hpp>
+#include <uhdlib/usrp/common/x400_rpc_iface.hpp>
 #include <cmath>
 #include <memory>
 
@@ -27,11 +26,12 @@ namespace uhd { namespace usrp { namespace zbx {
 
 namespace {
 
-//! Depending on the given \p lo_step_size, this will return a valid frequency
-// range on a quantized grid for the the LOs. The lower limit of this range will
-// never be smaller than LMX2572_MIN_FREQ and the upper frequency will never be
-// larger than LMX2572_MAX_FREQ. All frequencies will be integer multiples of
-// the given \p lo_step_size.
+/*! Depending on the given \p lo_step_size, this will return a valid frequency
+ * range on a quantized grid for the the LOs. The lower limit of this range will
+ * never be smaller than LMX2572_MIN_FREQ and the upper frequency will never be
+ * larger than LMX2572_MAX_FREQ. All frequencies will be integer multiples of
+ * the given \p lo_step_size.
+ */
 uhd::freq_range_t _get_quantized_lo_range(const double lo_step_size)
 {
     const double start = std::ceil(LMX2572_MIN_FREQ / lo_step_size) * lo_step_size;
@@ -480,7 +480,6 @@ public:
         bind_accessor(_antenna);
         bind_accessor(_atr_mode);
         bind_accessor(_profile);
-        bind_accessor(_command_time);
         bind_accessor(_frequency);
         bind_accessor(_dsa1);
         bind_accessor(_dsa2);
@@ -502,9 +501,10 @@ private:
     uhd::experts::data_reader_t<std::string> _profile;
 
     // Inputs from the Frequency FE expert
+    // Command time is just read but we don't trigger on it.
+    uhd::experts::data_reader_t<time_spec_t> _command_time;
     // Note: this is just for node dependencies, we want to be notified if just the tune
     // frequency has been changed.
-    uhd::experts::data_reader_t<time_spec_t> _command_time;
     uhd::experts::data_reader_t<double> _frequency;
 
     // Inputs from Gain TX expert
@@ -570,7 +570,6 @@ public:
         bind_accessor(_antenna);
         bind_accessor(_atr_mode);
         bind_accessor(_profile);
-        bind_accessor(_command_time);
         bind_accessor(_frequency);
         bind_accessor(_dsa1);
         bind_accessor(_dsa2);
@@ -594,9 +593,10 @@ private:
     uhd::experts::data_reader_t<std::string> _profile;
 
     // Inputs from the Frequency FE expert
+    // Command time is just read but we don't trigger on it.
+    uhd::experts::data_reader_t<time_spec_t> _command_time;
     // Note: this is just for node dependencies, we want to be notified if just the tune
     // frequency has been changed.
-    uhd::experts::data_reader_t<time_spec_t> _command_time;
     uhd::experts::data_reader_t<double> _frequency;
 
     // Inputs from Gain expert
@@ -679,7 +679,6 @@ public:
         const uhd::fs_path fe_path,
         const uhd::direction_t trx,
         const size_t chan,
-        const std::string rpc_prefix,
         int db_idx,
         uhd::usrp::x400_rpc_iface::sptr rpcc)
         : uhd::experts::worker_node_t(fe_path / "zbx_rfdc_freq_expert")
@@ -689,7 +688,6 @@ public:
               db, fe_path / "los" / RFDC_NCO / "freq" / "value" / "coerced")
         , _if2_frequency_desired(db, fe_path / "if_freq" / "desired")
         , _if2_frequency_coerced(db, fe_path / "if_freq" / "coerced")
-        , _rpc_prefix(rpc_prefix)
         , _db_idx(db_idx)
         , _rpcc(rpcc)
         , _trx(trx)
@@ -718,7 +716,6 @@ private:
     uhd::experts::data_writer_t<double> _if2_frequency_coerced;
 
 
-    const std::string _rpc_prefix;
     const size_t _db_idx;
     uhd::usrp::x400_rpc_iface::sptr _rpcc;
     const uhd::direction_t _trx;
@@ -802,13 +799,15 @@ private:
     // Attributes
     rfdc_control::sptr _rfdcc;
     std::shared_ptr<zbx_cpld_ctrl> _cpld;
-    //! Store the sync state of the ADC gearboxes. If false, we assume they're
-    // out of sync. This could also be a vector of booleans if we want to be
-    // able to sync ADC gearboxes individually.
+    /*! Store the sync state of the ADC gearboxes. If false, we assume they're
+     * out of sync. This could also be a vector of booleans if we want to be
+     * able to sync ADC gearboxes individually.
+     */
     bool _adcs_synced = false;
-    //! Store the sync state of the DAC gearboxes. If false, we assume they're
-    // out of sync. This could also be a vector of booleans if we want to be
-    // able to sync DAC gearboxes individually.
+    /*! Store the sync state of the DAC gearboxes. If false, we assume they're
+     * out of sync. This could also be a vector of booleans if we want to be
+     * able to sync DAC gearboxes individually.
+     */
     bool _dacs_synced = false;
 };
 

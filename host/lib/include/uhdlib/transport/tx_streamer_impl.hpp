@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <limits>
+#include <optional>
 #include <vector>
 
 namespace uhd { namespace transport {
@@ -109,6 +110,7 @@ public:
         , _zero_buffs(num_chans, &_zero)
         , _out_buffs(num_chans)
         , _chans_connected(num_chans, false)
+        , _stream_info(num_chans, stream_args.args)
     {
         if ((stream_args.args.cast<std::string>("transmit_policy", "default")
                 == "stop_on_seq_error")
@@ -124,6 +126,9 @@ public:
         if (stream_args.args.has_key("spp")) {
             _spp = stream_args.args.cast<size_t>("spp", _spp);
         }
+        if (stream_args.args.has_key("mtu")) {
+            _mtu_override = stream_args.args.cast<size_t>("mtu", _mtu);
+        }
     }
 
     virtual void connect_channel(const size_t channel, typename transport_t::uptr xport)
@@ -137,9 +142,7 @@ public:
             _chans_connected.cend(),
             [](const bool connected) { return connected; });
 
-        if (mtu < _mtu) {
-            set_mtu(mtu);
-        }
+        set_mtu(_mtu_override.value_or(std::min(_mtu, mtu)));
     }
 
     size_t get_num_channels() const override
@@ -150,6 +153,49 @@ public:
     size_t get_max_num_samps() const override
     {
         return _spp;
+    }
+
+    //! Get stream info
+    uhd::device_addr_t get_stream_info(const size_t chan) const override
+    {
+        if (chan >= _stream_info.size()) {
+            throw uhd::index_error("Invalid channel index for get_stream_info");
+        }
+
+        // Start with filtered base stream info (exclude underscore keys)
+        uhd::device_addr_t stream_info;
+        for (const auto& key : _stream_info[chan].keys()) {
+            if (!key.empty() && key[0] != '_') {
+                stream_info[key] = _stream_info[chan][key];
+            }
+        }
+
+        // Try to get transport info and merge it
+        try {
+            uhd::device_addr_t xport_info = _zero_copy_streamer.get_xport_info(chan);
+            // Merge transport info into stream info, filtering out keys starting with
+            // underscore
+            for (const auto& key : xport_info.keys()) {
+                if (!key.empty() && key[0] != '_') {
+                    stream_info[key] = xport_info[key];
+                }
+            }
+        } catch (const std::exception&) {
+            // If getting transport info fails, just return the basic stream info
+            // This handles cases where transport doesn't support get_xport_info()
+        }
+
+        return stream_info;
+    }
+
+    //! Update stream info
+    void update_stream_info(
+        const size_t chan, const std::string& key, const std::string& value)
+    {
+        if (chan >= _stream_info.size()) {
+            throw uhd::index_error("Invalid channel index for update_stream_info");
+        }
+        _stream_info[chan][key] = value;
     }
 
     /*! Get width of each over-the-wire item component. For complex items,
@@ -374,8 +420,9 @@ protected:
         return _mtu;
     }
 
-    //! Sets the MTU and checks spp. If spp would exceed the new MTU, it is
-    // reduced accordingly.
+    /*! Sets the MTU and checks spp. If spp would exceed the new MTU, it is
+     * reduced accordingly.
+     */
     void set_mtu(const size_t mtu)
     {
         _mtu                      = mtu;
@@ -389,6 +436,7 @@ protected:
     void set_scale_factor(const size_t chan, const double scale_factor)
     {
         _converters[chan]->set_scalar(scale_factor);
+        _stream_info[chan]["scale_factor"] = std::to_string(scale_factor);
     }
 
     //! Configures sample rate for conversion of timestamp
@@ -481,6 +529,8 @@ private:
         for (size_t i = 0; i < num_chans; i++) {
             _converters.push_back(convert::get_converter(id)());
             _converters.back()->set_scalar(32767.0);
+            _stream_info[i]["cpu_format"] = stream_args.cpu_format;
+            _stream_info[i]["otw_format"] = stream_args.otw_format;
         }
     }
 
@@ -504,8 +554,11 @@ private:
     // Sample rate used to calculate metadata time_spec_t
     double _samp_rate = 1.0;
 
-    // MTU, determined when xport is connected and modifiable by subclass
+    // MTU, determined when xport is connected or by an MTU override
     size_t _mtu = std::numeric_limits<std::size_t>::max();
+
+    //! Set this if the user provided an override value for the MTU
+    std::optional<size_t> _mtu_override{};
 
     // Size of CHDR header in bytes
     size_t _hdr_len = 0;
@@ -524,6 +577,9 @@ private:
     // Flag to store if all channels are connected. This is to speed up the lookup
     // of all channels' connected-status.
     bool _all_chans_connected = false;
+
+    // Stream information storage
+    std::vector<uhd::device_addr_t> _stream_info;
 };
 
 }} // namespace uhd::transport

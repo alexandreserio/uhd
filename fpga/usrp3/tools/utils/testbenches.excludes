@@ -11,6 +11,7 @@ top/x300/sim/x300_pcie_int
 # exclude due to memory leak in Vivado
 lib/rfnoc/blocks/rfnoc_block_fft
 lib/rfnoc/blocks/rfnoc_block_fft/fft_packetize_tb
+lib/dsp/sim/axis_hb_cascade_intp_tb
 
 # These testbenches only work in ModelSim
 lib/axi4s_sv/axi4s_remove_bytes_tb
@@ -22,3 +23,14 @@ top/x400/ip/eth_100g_bd/lbus_tb
 top/x400/rf/sim
 top/x300/dboards/obx/cpld/sim/obx_register_endpoints
 top/x300/dboards/obx/cpld/sim/obx_spi_passthrough
+lib/sim/fifo/axi_fifo
+lib/sim/control/ctrlport_spi_adrv_tb
+lib/rfnoc/blocks/rfnoc_block_ddc/rfnoc_block_ddc_ms
+
+# exclude testbenches with Vivado Simulator kernel fatal errors
+lib/rfnoc/blocks/rfnoc_block_radio
+lib/rfnoc/blocks/rfnoc_block_switchboard
+lib/rfnoc/sim/chdr_channel_mux_tb
+lib/rfnoc/sim/chdr_resize_tb
+lib/rfnoc/sim/chdr_stream_endpoint_tb
+lib/sim/fifo

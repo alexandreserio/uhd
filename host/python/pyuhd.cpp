@@ -16,6 +16,7 @@ namespace py = pybind11;
 
 #include "cal/cal_python.hpp"
 #include "device_python.hpp"
+#include "features/features_python.hpp"
 #include "include/uhdlib/usrp/common/max287x_python.hpp"
 #include "property_tree_python.hpp"
 #include "rfnoc/ddc_block_control_python.hpp"
@@ -45,6 +46,9 @@ namespace py = pybind11;
 #include "types/types_python.hpp"
 #include "usrp/dboard_iface_python.hpp"
 #include "usrp/fe_connection_python.hpp"
+#ifdef ENABLE_MPMD
+#    include "usrp/mpm_client_python.hpp"
+#endif
 #include "usrp/multi_usrp_python.hpp"
 #include "usrp/subdev_spec_python.hpp"
 #include "usrp_clock/multi_usrp_clock_python.hpp"
@@ -84,6 +88,7 @@ PYBIND11_MODULE(libpyuhd, m)
     export_types(types_module);
     export_time_spec(types_module);
     export_spi_config(types_module);
+    export_discoverable_feature(types_module);
     export_metadata(types_module);
     export_sensors(types_module);
     export_tune(types_module);
@@ -91,6 +96,9 @@ PYBIND11_MODULE(libpyuhd, m)
     // Register usrp submodule
     auto usrp_module = m.def_submodule("usrp", "USRP Objects");
     export_multi_usrp(usrp_module);
+#ifdef ENABLE_MPMD
+    export_rpc_client(usrp_module);
+#endif
     export_subdev_spec(usrp_module);
     export_dboard_iface(usrp_module);
     export_fe_connection(usrp_module);

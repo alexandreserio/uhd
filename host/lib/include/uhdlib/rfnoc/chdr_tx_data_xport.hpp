@@ -17,6 +17,7 @@
 #include <uhdlib/transport/io_service.hpp>
 #include <uhdlib/transport/link_if.hpp>
 #include <chrono>
+#include <climits>
 #include <memory>
 
 namespace uhd { namespace rfnoc {
@@ -62,7 +63,8 @@ public:
         fc_payload.num_bytes = counts.bytes;
         fc_payload.num_pkts  = counts.packets;
 
-        _fc_packet->refresh(buff->data(), header, fc_payload);
+        _fc_packet->refresh(
+            buff->data(), send_link->get_send_frame_size(), header, fc_payload);
         const size_t size = header.get_length();
 
         buff->set_packet_size(size);
@@ -274,7 +276,7 @@ public:
         header.set_seq_num(_data_seq_num);
         header.set_dst_epid(_send_header.get_dst_epid());
 
-        _strc_packet->refresh(buff->data(), header, _strc_pyld);
+        _strc_packet->refresh(buff->data(), _frame_size, header, _strc_pyld);
         const size_t size = header.get_length();
 
         buff->set_packet_size(size);
@@ -295,6 +297,13 @@ public:
         // and init get the same STRS response from the FPGA.
         _send_io->wait_for_dest_ready(UINT_MAX, 0);
     }
+
+    /*!
+     * Get transport configuration information
+     *
+     * \return device_addr_t containing transport configuration parameters
+     */
+    uhd::device_addr_t get_xport_info() const;
 
     /*!
      * Writes header into frame buffer and returns payload pointer
@@ -489,6 +498,9 @@ private:
 
     //! The size of the send frame
     size_t _frame_size;
+
+    // Flow control parameters
+    fc_params_t _fc_params;
 
     // Disconnect callback
     disconnect_callback_t _disconnect;

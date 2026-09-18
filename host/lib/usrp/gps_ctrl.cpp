@@ -11,20 +11,18 @@
 #include <uhdlib/usrp/gps_ctrl.hpp>
 #include <stdint.h>
 #include <boost/algorithm/string.hpp>
-#include <boost/date_time.hpp>
-#include <boost/date_time/posix_time/posix_time_types.hpp>
-#include <boost/thread/thread_time.hpp>
 #include <boost/tokenizer.hpp>
 #include <chrono>
 #include <ctime>
+#include <iomanip>
 #include <mutex>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
 
 using namespace uhd;
-using namespace boost::posix_time;
 using namespace boost::algorithm;
 
 namespace {
@@ -48,9 +46,11 @@ gps_ctrl::~gps_ctrl(void)
 class gps_ctrl_impl : public gps_ctrl
 {
 private:
-    std::map<std::string, std::tuple<std::string, boost::system_time, bool>> sentences;
+    std::map<std::string,
+        std::tuple<std::string, std::chrono::steady_clock::time_point, bool>>
+        sentences;
     std::mutex cache_mutex;
-    boost::system_time _last_cache_update;
+    std::chrono::steady_clock::time_point _last_cache_update;
 
     std::string get_sentence(const std::string which,
         const int max_age_ms,
@@ -58,9 +58,9 @@ private:
         const bool wait_for_next = false)
     {
         std::string sentence;
-        boost::system_time now       = boost::get_system_time();
-        boost::system_time exit_time = now + milliseconds(timeout);
-        boost::posix_time::time_duration age;
+        auto now             = std::chrono::steady_clock::now();
+        const auto exit_time = now + std::chrono::milliseconds(timeout);
+        std::chrono::milliseconds age;
 
         if (wait_for_next) {
             update_cache();
@@ -72,17 +72,18 @@ private:
         while (1) {
             try {
                 // update cache if older than a millisecond
-                if (now - _last_cache_update > milliseconds(1)) {
+                if (now - _last_cache_update > std::chrono::milliseconds(1)) {
                     update_cache();
                 }
 
                 std::lock_guard<std::mutex> lock(cache_mutex);
                 if (sentences.find(which) == sentences.end()) {
-                    age = milliseconds(max_age_ms);
+                    age = std::chrono::milliseconds(max_age_ms);
                 } else {
-                    age = boost::get_system_time() - std::get<1>(sentences[which]);
+                    age = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - std::get<1>(sentences[which]));
                 }
-                if (age < milliseconds(max_age_ms)
+                if (age < std::chrono::milliseconds(max_age_ms)
                     and (not(wait_for_next and std::get<2>(sentences[which])))) {
                     sentence                      = std::get<0>(sentences[which]);
                     std::get<2>(sentences[which]) = true;
@@ -96,7 +97,7 @@ private:
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            now = boost::get_system_time();
+            now = std::chrono::steady_clock::now();
         }
 
         if (sentence.empty()) {
@@ -146,8 +147,21 @@ private:
             return;
         }
 
+        if (_needs_flush_for_stale_data) {
+            // Flush any stale data in the rx buffer to ensure we get fresh data
+            _flush();
+            // Wait a bit to allow new data to arrive
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(GPS_NMEA_NORMAL_FRESHNESS));
+        }
+
         static const std::regex servo_regex("^\\d\\d-\\d\\d-\\d\\d.*$");
-        static const std::regex gp_msg_regex("^\\$GP.*,\\*[0-9A-F]{2}$");
+        // Support all NMEA message prefixes: $GP, $GN, $GA, $GB, $GQ, etc.
+        // GNSS NMEA messages will have the format of '$', the 2-character talker ID
+        // (first letter always 'G'), a 3-character message type, a comma, then a number
+        // of fields separated by commas, and finally a '*' followed by a 2-character
+        // checksum.
+        static const std::regex nmea_msg_regex("^\\$G[A-Z]{4},.*\\*[0-9A-F]{2}$");
         std::map<std::string, std::string> msgs;
 
         // Get all GPSDO messages available
@@ -173,7 +187,8 @@ private:
                     msg, servo_regex, std::regex_constants::match_continuous)) {
                 UHD_LOG_TRACE("GPS", "Received new SERVO message: " << msg);
                 msgs["SERVO"] = msg;
-            } else if (std::regex_match(msg, gp_msg_regex) and is_nmea_checksum_ok(msg)) {
+            } else if (std::regex_match(msg, nmea_msg_regex)
+                       and is_nmea_checksum_ok(msg)) {
                 UHD_LOG_TRACE(
                     "GPS", "Received new " << msg.substr(1, 5) << " message: " << msg);
                 msgs[msg.substr(1, 5)] = msg;
@@ -188,7 +203,7 @@ private:
             }
         }
 
-        boost::system_time time = boost::get_system_time();
+        auto time = std::chrono::steady_clock::now();
 
         // Update sentences with newly read data
         for (auto& msg : msgs) {
@@ -202,7 +217,10 @@ private:
     }
 
 public:
-    gps_ctrl_impl(uart_iface::sptr uart) : _uart(uart), _gps_type(GPS_TYPE_NONE)
+    gps_ctrl_impl(uart_iface::sptr uart, bool needs_flush_for_stale_data)
+        : _uart(uart)
+        , _needs_flush_for_stale_data(needs_flush_for_stale_data)
+        , _gps_type(GPS_TYPE_NONE)
     {
         std::string reply;
         bool i_heard_some_nmea = false, i_heard_something_weird = false;
@@ -213,11 +231,12 @@ public:
         _send("*IDN?\r\n"); // request identity from the GPSDO
 
         // then we loop until we either timeout, or until we get a response that indicates
-        // we're a JL device maximum response time was measured at ~320ms, so we set the
-        // timeout at 650ms
-        const boost::system_time comm_timeout =
-            boost::get_system_time() + milliseconds(650);
-        while (boost::get_system_time() < comm_timeout) {
+        // we're a JL device maximum response time was measured at ~320ms. For a generic
+        // nmea device, the messages will generally be sent every second. So wait the
+        // longer of the two for determining if a GPS chip is present.
+        const auto comm_timeout = std::chrono::steady_clock::now()
+                                  + std::chrono::milliseconds(GPS_NMEA_NORMAL_FRESHNESS);
+        while (std::chrono::steady_clock::now() < comm_timeout) {
             reply = _recv();
             // known devices are JL "FireFly", "GPSTCXO", and "LC_XO"
             if (reply.find("FireFly") != std::string::npos
@@ -274,6 +293,12 @@ public:
     }
 
     // return a list of supported sensors
+    //
+    // Only GPS (GP) constellation messages are enabled by default, so all NMEA
+    // sentences are emitted with the GP talker ID. If multi-constellation is
+    // enabled, sentences may instead use the GN talker ID (and additional
+    // constellations such as GA/GB/GQ for GSV); those keys are still accepted by
+    // get_sensor() even if not advertised here.
     std::vector<std::string> get_sensors(void) override
     {
         return {"gps_gpgga", "gps_gprmc", "gps_time", "gps_locked", "gps_servo"};
@@ -281,19 +306,22 @@ public:
 
     uhd::sensor_value_t get_sensor(std::string key) override
     {
-        if (key == "gps_gpgga" or key == "gps_gprmc") {
-            return sensor_value_t(boost::to_upper_copy(key),
-                get_sentence(boost::to_upper_copy(key.substr(4, 8)),
-                    GPS_NMEA_NORMAL_FRESHNESS,
-                    GPS_TIMEOUT_DELAY_MS),
-                "");
-        } else if (key == "gps_time") {
+        if (key == "gps_time") {
             return sensor_value_t("GPS epoch time", int(get_epoch_time()), "seconds");
         } else if (key == "gps_locked") {
             return sensor_value_t("GPS lock status", locked(), "locked", "unlocked");
         } else if (key == "gps_servo") {
             return sensor_value_t("GPS_SERVO",
                 get_sentence("SERVO", GPS_SERVO_FRESHNESS, GPS_TIMEOUT_DELAY_MS),
+                "");
+        } else if (key.substr(0, 4) == "gps_" && key.length() > 4) {
+            // Treat any other gps_* key as a request for an NMEA sentence, where
+            // the part after "gps_" is the NMEA sentence identifier (e.g.
+            // gps_gpgsa -> GPGSA). This works for both GP and GN talker IDs.
+            return sensor_value_t(boost::to_upper_copy(key),
+                get_sentence(boost::to_upper_copy(key.substr(4, std::string::npos)),
+                    GPS_NMEA_NORMAL_FRESHNESS,
+                    GPS_TIMEOUT_DELAY_MS),
                 "");
         } else {
             throw uhd::value_error("gps ctrl get_sensor unknown key: " + key);
@@ -364,10 +392,10 @@ private:
         return toked[offset];
     }
 
-    ptime get_time(void)
+    std::chrono::system_clock::time_point get_time(void)
     {
         int error_cnt = 0;
-        ptime gps_time;
+        std::chrono::system_clock::time_point gps_time;
         while (error_cnt < 2) {
             try {
                 // wait for next GPRMC string
@@ -382,7 +410,8 @@ private:
                         std::string("Invalid response \"") + reply + "\"");
                 }
 
-                struct tm raw_date;
+                std::tm raw_date{};
+                raw_date.tm_isdst = 0;
                 raw_date.tm_year =
                     std::stoi(datestr.substr(4, 2)) + 2000 - 1900; // years since 1900
                 raw_date.tm_mon =
@@ -391,10 +420,22 @@ private:
                 raw_date.tm_hour = std::stoi(timestr.substr(0, 2));
                 raw_date.tm_min  = std::stoi(timestr.substr(2, 2));
                 raw_date.tm_sec  = std::stoi(timestr.substr(4, 2));
-                gps_time         = boost::posix_time::ptime_from_tm(raw_date);
+#ifdef _WIN32
+                gps_time = std::chrono::system_clock::from_time_t(_mkgmtime(&raw_date));
+#else
+                gps_time = std::chrono::system_clock::from_time_t(timegm(&raw_date));
+#endif
 
-                UHD_LOG_TRACE(
-                    "GPS", "GPS time: " + boost::posix_time::to_simple_string(gps_time));
+                auto time_t_val = std::chrono::system_clock::to_time_t(gps_time);
+                std::tm tm_buf{};
+#ifdef _WIN32
+                gmtime_s(&tm_buf, &time_t_val);
+#else
+                gmtime_r(&time_t_val, &tm_buf);
+#endif
+                std::ostringstream time_str;
+                time_str << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
+                UHD_LOG_TRACE("GPS", "GPS time: " + time_str.str());
                 return gps_time;
 
             } catch (std::exception& e) {
@@ -409,7 +450,9 @@ private:
 
     int64_t get_epoch_time(void)
     {
-        return (get_time() - from_time_t(0)).total_seconds();
+        auto gps_time = get_time();
+        auto epoch    = std::chrono::system_clock::from_time_t(0);
+        return std::chrono::duration_cast<std::chrono::seconds>(gps_time - epoch).count();
     }
 
     bool gps_detected(void) override
@@ -437,6 +480,7 @@ private:
     }
 
     uart_iface::sptr _uart;
+    bool _needs_flush_for_stale_data;
 
     void _flush(void)
     {
@@ -461,7 +505,7 @@ private:
 /***********************************************************************
  * Public make function for the GPS control
  **********************************************************************/
-gps_ctrl::sptr gps_ctrl::make(uart_iface::sptr uart)
+gps_ctrl::sptr gps_ctrl::make(uart_iface::sptr uart, bool needs_flush_for_stale_data)
 {
-    return sptr(new gps_ctrl_impl(uart));
+    return sptr(new gps_ctrl_impl(uart, needs_flush_for_stale_data));
 }

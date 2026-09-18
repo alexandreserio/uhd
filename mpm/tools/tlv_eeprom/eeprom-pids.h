@@ -8,11 +8,13 @@
 
 #include <stdint.h>
 
-struct pid_info {
-  uint16_t pid;
-  const char* name;
-  const char* description;
-  uint16_t rev_offset;
+struct pid_info
+{
+    uint16_t pid;
+    const char* name;
+    const char* description;
+    uint16_t rev_offset;
+    const char* addtl_info;
 };
 
 const struct pid_info* get_info_from_pid(uint16_t pid);

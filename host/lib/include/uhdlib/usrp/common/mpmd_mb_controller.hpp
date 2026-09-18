@@ -13,7 +13,7 @@
 #include <uhdlib/features/discoverable_feature_registry.hpp>
 #include <uhdlib/features/fpga_load_notification_iface.hpp>
 #include <uhdlib/usrp/common/rpc.hpp>
-#include <uhdlib/utils/rpc.hpp>
+#include <unordered_set>
 #include <map>
 #include <memory>
 
@@ -31,8 +31,9 @@ class mpmd_mb_controller : public mb_controller,
 public:
     using sptr = std::shared_ptr<mpmd_mb_controller>;
 
-    mpmd_mb_controller(
-        uhd::usrp::mpmd_rpc_iface::sptr rpcc, uhd::device_addr_t device_info);
+    mpmd_mb_controller(uhd::usrp::mpmd_rpc_iface::sptr rpcc,
+        uhd::device_addr_t device_info,
+        const size_t mb_idx);
 
     //! Return reference to the RPC client
     uhd::rpc_client::sptr get_rpc_client()
@@ -49,9 +50,10 @@ public:
     /**************************************************************************
      * Timekeeper API
      *************************************************************************/
-    //! MPM-specific version of the timekeeper controls
-    //
-    // MPM devices talk to MPM via RPC to control the timekeeper
+    /*! \brief MPM-specific version of the timekeeper controls.
+     *
+     * MPM devices talk to MPM via RPC to control the timekeeper
+     */
     class mpmd_timekeeper : public mb_controller::timekeeper
     {
     public:
@@ -127,12 +129,16 @@ private:
 
     //! Helper for synchronize(): Dispatch the aggregate_sync_data() RPC call
     std::map<std::string, std::string> _aggregate_sync_info(
-        const std::list<std::map<std::string, std::string>>& collated_sync_args);
+        const std::vector<std::map<std::string, std::string>>& collated_sync_args);
 
 
     /**************************************************************************
      * Attributes
      *************************************************************************/
+    //! Motherboard index for logging
+    const size_t _mb_index;
+    const std::string _log_id;
+
     //! Reference to RPC interface
     mutable uhd::usrp::mpmd_rpc_iface::sptr _rpc;
 

@@ -9,13 +9,12 @@
 #include <uhd/image_loader.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhd/utils/static.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/format.hpp>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <utility>
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 typedef std::map<std::string, uhd::image_loader::loader_fcn_t> loader_fcn_map_t;
 typedef std::map<std::string, std::string> string_map_t;
@@ -53,9 +52,7 @@ bool uhd::image_loader::load(
         std::string type = image_loader_args.args.get("type");
         if (get_image_loaders().find(type) == get_image_loaders().end()) {
             throw uhd::runtime_error(
-                str(boost::format(
-                        "There is no image loader registered for given type \"%s\".")
-                    % type));
+                "There is no image loader registered for given type \"" + type + "\".");
         } else
             return get_image_loaders().at(type)(image_loader_args);
     } else {

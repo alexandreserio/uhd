@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,8 +41,9 @@ public:
     const size_t id;
     //! A string identifier for this action
     std::string key;
-    //! An arbitrary payload. It is up to consumers and producers to
-    // (de-)serialize it.
+    /*! An arbitrary payload. It is up to consumers and producers to
+     * (de-)serialize it.
+     */
     std::vector<uint8_t> payload;
     //! A dictionary of key-value pairs. May be used as desired.
     uhd::device_addr_t args;
@@ -100,11 +102,30 @@ public:
 
     //! Factory function
     static sptr make(uhd::async_metadata_t::event_code_t event_code,
-        const boost::optional<uint64_t>& tsf);
+        const std::optional<uint64_t>& tsf);
+
+    /*! Factory function
+     *
+     * Required to avoid ambiguity between boost and std versions when using
+     * timestamp directly.
+     */
+    static sptr make(uhd::async_metadata_t::event_code_t event_code, uint64_t tsf)
+    {
+        return make(event_code, std::make_optional<uint64_t>(tsf));
+    }
+
+    //! Factory function (legacy, to support boost::optional)
+    [[deprecated("Prefer std::optional over boost::optional.")]] static sptr make(
+        uhd::async_metadata_t::event_code_t event_code,
+        const boost::optional<uint64_t>& tsf)
+    {
+        return make(
+            event_code, bool(tsf) ? std::make_optional<uint64_t>(*tsf) : std::nullopt);
+    }
 
 protected:
     tx_event_action_info(uhd::async_metadata_t::event_code_t event_code,
-        const boost::optional<uint64_t>& tsf);
+        const std::optional<uint64_t>& tsf);
 };
 
 //! Action object for graph-based tuning

@@ -20,10 +20,9 @@
 #include <uhd/utils/paths.hpp>
 #include <uhd/utils/safe_call.hpp>
 #include <uhd/utils/static.hpp>
-#include <boost/filesystem.hpp>
+#include <uhdlib/utils/device_filter.hpp>
 #include <boost/format.hpp>
 #include <boost/functional/hash.hpp>
-#include <boost/lexical_cast.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -137,9 +136,11 @@ std::string check_option_valid(const std::string& name,
 /***********************************************************************
  * Discovery
  **********************************************************************/
-//! Look up the type of B-Series device we're currently running.
-//  Throws a uhd::runtime_error if the USB PID and the product ID stored
-//  in the MB EEPROM are invalid,
+/*! \brief Look up the type of B-Series device we're currently running.
+ *
+ *  Throws a uhd::runtime_error if the USB PID and the product ID stored
+ *  in the MB EEPROM are invalid.
+ */
 b200_product_t get_b200_product(
     const usb_device_handle::sptr& handle, const mboard_eeprom_t& mb_eeprom)
 {
@@ -152,7 +153,7 @@ b200_product_t get_b200_product(
     if (mb_eeprom["product"].empty()) {
         throw uhd::runtime_error("B200: Missing product ID on EEPROM.");
     }
-    product_id = boost::lexical_cast<uint16_t>(mb_eeprom["product"]);
+    product_id = uhd::cast::from_str<uint16_t>(mb_eeprom["product"]);
     if (not B2XX_PRODUCT_ID.has_key(product_id)) {
         throw uhd::runtime_error(
             str(boost::format("B200 unknown product code: 0x%04x") % product_id));
@@ -264,7 +265,7 @@ static device_addrs_t b200_find(const device_addr_t& hint)
         }
     }
 
-    return b200_addrs;
+    return device_filter::filter_device_addrs(b200_addrs, hint);
 }
 
 /***********************************************************************
@@ -426,7 +427,7 @@ b200_impl::b200_impl(
         product_name = "B200?";
     }
     if (not mb_eeprom["revision"].empty()) {
-        _revision = boost::lexical_cast<size_t>(mb_eeprom["revision"]);
+        _revision = uhd::cast::from_str<size_t>(mb_eeprom["revision"]);
     }
 
     UHD_LOGGER_INFO("B200") << "Detected Device: " << B2XX_STR_NAMES[_product];

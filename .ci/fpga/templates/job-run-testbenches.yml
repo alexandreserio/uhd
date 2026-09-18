@@ -28,12 +28,15 @@ jobs:
     value: ${{ iif(eq(parameters.simulator, 'xsim'), 'testbenches', parameters.simulator) }}
   steps:
     - template: setup_steps.yml
+      parameters:
+        includeAdditionalSources: true
 
     - bash: |
         source $(Build.SourcesDirectory)/uhddev/.ci/fpga/scripts/run_setup.sh ./top/x300
 
         echo "---- Run testbenches ----"
         pushd ./tools/utils
+        python3 -m pip install --upgrade pip
         pip3 install -r requirements.txt
         python3 ./run_testbenches.py --logged --simulator ${{ parameters.simulator }} --excludes=${{ variables.excludes_file }}.excludes -j4 --report $(Build.ArtifactStagingDirectory)/junit.xml run
         popd

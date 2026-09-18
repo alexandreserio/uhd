@@ -37,14 +37,33 @@ ctrl_payload populate_ctrl_payload()
     pyld.src_port    = rand64() & 0x03FF;
     pyld.is_ack      = rand64() & 0x1;
     pyld.src_epid    = rand64() & 0xFFFF;
-    pyld.data_vtr[0] = rand64() & 0xFFFFFFFF;
     pyld.byte_enable = rand64() & 0xF;
     pyld.op_code     = static_cast<ctrl_opcode_t>(rand64() % 8);
     pyld.status      = static_cast<ctrl_status_t>(rand64() % 4);
     if (rand64() % 2 == 0) {
         pyld.timestamp = rand64();
     } else {
-        pyld.timestamp = boost::none;
+        pyld.timestamp = {};
+    }
+    // Set num_data, req_size, and data_vtr based on packet type.
+    // Read requests and write/sleep responses carry no data words on the wire.
+    // For read requests, req_size encodes the requested word count.
+    if (pyld.is_read_request()) {
+        pyld.data_vtr = {};
+        pyld.num_data = 0;
+        pyld.req_size = (rand64() % 15) + 1; // 1 to 15
+    } else if (pyld.is_write_response()) {
+        pyld.data_vtr = {};
+        pyld.num_data = 0;
+        pyld.req_size = 0;
+    } else {
+        const size_t num_words = (rand64() % ctrl_payload::MAX_DATA_WORDS) + 1;
+        pyld.data_vtr.resize(num_words);
+        for (auto& word : pyld.data_vtr) {
+            word = rand64() & 0xFFFFFFFF;
+        }
+        pyld.num_data = pyld.data_vtr.size();
+        pyld.req_size = 0;
     }
     return pyld;
 }
@@ -92,6 +111,25 @@ void byte_swap(uint64_t* buff)
     }
 }
 
+// ctrl_payload uses 32-bit serialization, so cross-endianness simulation needs
+// 32-bit swaps for the ctrl payload but 64-bit swaps for the CHDR header.
+// chdr_header_words: number of 64-bit words occupied by the CHDR header (1 for
+// CHDR-64, 4 for CHDR-256).
+void ctrl_byte_swap(uint64_t* buff, size_t chdr_header_words)
+{
+    // Swap CHDR header words at 64-bit granularity
+    for (size_t i = 0; i < chdr_header_words; i++) {
+        buff[i] = uhd::byteswap(buff[i]);
+    }
+    // Swap ctrl payload at 32-bit granularity
+    uint32_t* payload = reinterpret_cast<uint32_t*>(buff + chdr_header_words);
+    const size_t payload_words =
+        (MAX_BUF_SIZE_BYTES - chdr_header_words * sizeof(uint64_t)) / sizeof(uint32_t);
+    for (size_t i = 0; i < payload_words; i++) {
+        payload[i] = uhd::byteswap(payload[i]);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(chdr_ctrl_packet_no_swap_64)
 {
     uint64_t buff[MAX_BUF_SIZE_WORDS];
@@ -104,7 +142,7 @@ BOOST_AUTO_TEST_CASE(chdr_ctrl_packet_no_swap_64)
         ctrl_payload pyld = populate_ctrl_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -128,7 +166,7 @@ BOOST_AUTO_TEST_CASE(chdr_ctrl_packet_no_swap_256)
         ctrl_payload pyld = populate_ctrl_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -150,11 +188,11 @@ BOOST_AUTO_TEST_CASE(chdr_ctrl_packet_swap_64)
         ctrl_payload pyld = populate_ctrl_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
-        byte_swap(buff);
+        ctrl_byte_swap(buff, 1);
 
         rx_pkt->refresh(buff);
         BOOST_CHECK(rx_pkt->get_chdr_header() == hdr);
@@ -174,11 +212,11 @@ BOOST_AUTO_TEST_CASE(chdr_ctrl_packet_swap_256)
         ctrl_payload pyld = populate_ctrl_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
-        byte_swap(buff);
+        ctrl_byte_swap(buff, 4);
 
         rx_pkt->refresh(buff);
         BOOST_CHECK(rx_pkt->get_chdr_header() == hdr);
@@ -198,7 +236,7 @@ BOOST_AUTO_TEST_CASE(chdr_strs_packet_no_swap_64)
         strs_payload pyld = populate_strs_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -222,7 +260,7 @@ BOOST_AUTO_TEST_CASE(chdr_strc_packet_no_swap_64)
         strc_payload pyld = populate_strc_payload();
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -290,7 +328,7 @@ BOOST_AUTO_TEST_CASE(chdr_mgmt_packet_no_swap_64)
         mgmt_payload pyld = populate_mgmt_payload(CHDR_W_64);
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -314,7 +352,7 @@ BOOST_AUTO_TEST_CASE(chdr_mgmt_packet_no_swap_256)
         mgmt_payload pyld = populate_mgmt_payload(CHDR_W_256);
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -336,7 +374,7 @@ BOOST_AUTO_TEST_CASE(chdr_mgmt_packet_swap_64)
         mgmt_payload pyld = populate_mgmt_payload(CHDR_W_64);
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 
@@ -360,7 +398,7 @@ BOOST_AUTO_TEST_CASE(chdr_mgmt_packet_swap_256)
         mgmt_payload pyld = populate_mgmt_payload(CHDR_W_256);
 
         memset(buff, 0, MAX_BUF_SIZE_BYTES);
-        tx_pkt->refresh(buff, hdr, pyld);
+        tx_pkt->refresh(buff, MAX_BUF_SIZE_BYTES, hdr, pyld);
         BOOST_CHECK(tx_pkt->get_chdr_header() == hdr);
         BOOST_CHECK(tx_pkt->get_payload() == pyld);
 

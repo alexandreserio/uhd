@@ -3,14 +3,13 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-"""Streaming tests for UHD devices using pytest.
-"""
+"""Streaming tests for UHD devices using pytest."""
 
+import time
 from pathlib import Path
 
 import batch_run_benchmark_rate
 import pytest
-import time
 import util_test_length
 from util_test_length import Test_Length_Full, Test_Length_Smoke, Test_Length_Stress
 
@@ -140,6 +139,28 @@ def _generate_b210_test_cases(metafunc, test_length):
     parametrize_test_length(metafunc, test_length, fast_params, stress_params)
 
 
+def _generate_b310_test_cases(metafunc, test_length):
+    test_cases = [
+        # fmt: off
+        # Test Lengths                                         dual_sfp  rate     rx_rate  rx_channels tx_rate  tx_channels tx_sample_align test case ID          # noqa: W505
+        # ---------------------------------------------------------------------------------------------------------------------------------------- # noqa: W505
+        [{Test_Length_Smoke},                     pytest.param(False,    122.88e6, 122.88e6, "0",        0,        "",         None,           id="1xRX@122.88e6")],
+        [{Test_Length_Smoke},                     pytest.param(False,    122.88e6, 122.88e6, "0,1",      0,        "",         None,           id="2xRX@122.88e6")],
+        [{Test_Length_Smoke},                     pytest.param(False,    122.88e6, 0,        "",         122.88e6, "0",        None,           id="1xTX@122.88e6")],
+        [{Test_Length_Smoke},                     pytest.param(False,    122.88e6, 0,        "",         122.88e6, "0,1",      None,           id="2xTX@122.88e6")],
+        [{Test_Length_Stress, Test_Length_Smoke}, pytest.param(False,    122.88e6, 122.88e6, "0",        122.88e6, "0",        None,           id="1xTRX@122.88e6")],
+        [{Test_Length_Stress, Test_Length_Smoke}, pytest.param(False,    122.88e6, 61.44e6,  "0,1",      61.44e6,  "0,1",      None,           id="2xTRX@61.44e6")],
+        # fmt: on
+    ]
+
+    argvalues = util_test_length.select_test_cases_by_length(test_length, test_cases)
+    metafunc.parametrize(ARGNAMES_DUAL_SFP, argvalues)
+
+    fast_params = util_test_length.test_length_params(iterations=2, duration=60)
+    stress_params = util_test_length.test_length_params(iterations=2, duration=600)
+    parametrize_test_length(metafunc, test_length, fast_params, stress_params)
+
+
 def _generate_e320_test_cases(metafunc, test_length):
     test_cases = [
         # fmt: off
@@ -211,7 +232,7 @@ def _generate_x410_test_cases(metafunc, test_length, dut_fpga):
         test_cases = [
             # fmt: off
             # Test Lengths                                         dual_sfp  rate     rx_rate  rx_channels tx_rate  tx_channels  tx_sample_align test case ID                 # noqa: W505
-            # ------------------------------------------------------------------------------------------------------------------------------                  # noqa: W505 
+            # ------------------------------------------------------------------------------------------------------------------------------                  # noqa: W505
             #[{},                                      pytest.param(False,    200e6,   200e6,   "0",        0,       "",         None,           id="1x10GbE-1xRX@200e6")],  # noqa: W505
             #[{},                                      pytest.param(False,    200e6,   100e6,   "0,1",      0,       "",         None,           id="1x10GbE-2xRX@100e6")],  # noqa: W505
             #[{},                                      pytest.param(False,    200e6,   0,       "",         200e6,   "0",        None,           id="1x10GbE-1xTX@200e6")],  # noqa: W505
@@ -290,7 +311,7 @@ def pytest_generate_tests(metafunc):
 
     metafunc.parametrize("dut_type", [dut_type])
 
-    if dut_type.lower() in ["b210", "b206"]:
+    if dut_type.lower() in ["b210", "b206", "b310"]:
         argvalues_dpdk = [
             #            use_dpdk  test case ID  marks
             pytest.param(
@@ -317,6 +338,8 @@ def pytest_generate_tests(metafunc):
         _generate_b206_test_cases(metafunc, test_length)
     elif dut_type.lower() == "b210":
         _generate_b210_test_cases(metafunc, test_length)
+    elif dut_type.lower() == "b310":
+        _generate_b310_test_cases(metafunc, test_length)
     elif dut_type.lower() == "e320":
         _generate_e320_test_cases(metafunc, test_length)
     elif dut_type.lower() == "x310":
@@ -351,7 +374,7 @@ def test_streaming(
     device_args = ""
 
     # construct device args string
-    if dut_type.lower() in ["n310", "n320", "e320", "b206", "b210", "x440"]:
+    if dut_type.lower() in ["n310", "n320", "e320", "b206", "b210", "b310", "x440"]:
         device_args += f"master_clock_rate={rate},"
 
     # mpm reboot on x440 is for spurrious RF performance,
@@ -360,7 +383,9 @@ def test_streaming(
         device_args += f"skip_mpm_reboot=1,"
 
     if dut_type in ["B210", "B206"]:
-        device_args += f"name={pytestconfig.getoption('name')},"
+        device_args += f"type=b200,name={pytestconfig.getoption('name')},"
+    elif dut_type.lower() in ["b310"]:
+        device_args += f"type=b3xx,resource={pytestconfig.getoption('resource')},"
     else:
         device_args += f"addr={pytestconfig.getoption('addr')},"
 
@@ -394,7 +419,7 @@ def test_streaming(
     benchmark_rate_params = {
         "args": device_args,
         "duration": duration,
-        "priority": "high",
+        "priority": "normal" if dut_type.lower() == "b310" else "high",
     }
 
     if rx_channels:
@@ -432,18 +457,22 @@ def test_streaming(
     trials = iterations // 2
     results = iterate_benchmark(benchmark_rate_path, iterations, trials, benchmark_rate_params)
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Benchmark rate results:")
-    print('|'.join([f'{key:<20}' for key in results[0]._asdict().keys()]))
+    print("|".join([f"{key:<20}" for key in results[0]._asdict().keys()]))
     for result in results:
-        print('|'.join([f'{val:<20}' for val in result._asdict().values()]))
+        print("|".join([f"{val:<20}" for val in result._asdict().values()]))
     good_results = [res for res in results if res.single_pass]
     stats = batch_run_benchmark_rate.calculate_stats(good_results)
-    print(batch_run_benchmark_rate.get_summary_string(stats, len(good_results), benchmark_rate_params))
+    print(
+        batch_run_benchmark_rate.get_summary_string(stats, len(good_results), benchmark_rate_params)
+    )
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}]")
 
     # TODO: define custom failed assertion explanations to avoid extra output
     # https://docs.pytest.org/en/6.2.x/assert.html#defining-your-own-explanation-for-failed-assertions
 
-    assert (len(good_results) == iterations), f"""Number of good results is not equal to iterations.
+    assert (
+        len(good_results) == iterations
+    ), f"""Number of good results is not equal to iterations.
             Actual test iterations: {len(results)}   (including additional trials)
             Expected good results:  {iterations}   (requested iterations)
             Actual good results:    {len(good_results)}"""
@@ -451,21 +480,21 @@ def test_streaming(
     # Thresholds are defined in the respective fixture in conftest.py
     if rx_channels:
         assert (
-            stats.avg_vals.dropped_samps <= threshold['average'].dropped_samps
+            stats.avg_vals.dropped_samps <= threshold["average"].dropped_samps
         ), f"""Number of dropped samples exceeded threshold.
                 Expected dropped samples: <= {threshold['average'].dropped_samps}
                 Actual dropped samples:      {stats.avg_vals.dropped_samps}"""
         assert (
-            stats.avg_vals.rx_timeouts <= threshold['average'].rx_timeouts
+            stats.avg_vals.rx_timeouts <= threshold["average"].rx_timeouts
         ), f"""Number of rx timeouts exceeded threshold.
                 Expected rx timeouts: <= {threshold['average'].rx_timeouts}
                 Actual rx timeouts:      {stats.avg_vals.rx_timeouts}"""
         assert (
-            stats.avg_vals.rx_seq_errs <= threshold['average'].rx_seq_errs
+            stats.avg_vals.rx_seq_errs <= threshold["average"].rx_seq_errs
         ), f"""Number of rx sequence errors exceeded threshold.
                 Expected rx sequence errors: <= {threshold['average'].rx_seq_errs}
                 Actual rx sequence errors:      {stats.avg_vals.rx_seq_errs}"""
-        if not stats.avg_vals.overruns <= threshold['average'].overruns:
+        if not stats.avg_vals.overruns <= threshold["average"].overruns:
             overrun_error_text = (
                 f"Number of overruns exceeded threshold.\n"
                 f"Expected overruns: <= {threshold['average'].overruns}\n"
@@ -478,16 +507,16 @@ def test_streaming(
 
     if tx_channels:
         assert (
-            stats.avg_vals.tx_timeouts <= threshold['average'].tx_timeouts
+            stats.avg_vals.tx_timeouts <= threshold["average"].tx_timeouts
         ), f"""Number of tx timeouts exceeded threshold.
                 Expected tx timeouts: <= {threshold['average'].tx_timeouts}
                 Actual tx timeouts:      {stats.avg_vals.tx_timeouts}"""
         assert (
-            stats.avg_vals.tx_seq_errs <= threshold['average'].tx_seq_errs
+            stats.avg_vals.tx_seq_errs <= threshold["average"].tx_seq_errs
         ), f"""Number of tx sequence errors exceeded threshold.
                 Expected tx sequence errors: <= {threshold['average'].tx_seq_errs}
                 Actual tx sequence errors:      {stats.avg_vals.tx_seq_errs}"""
-        if not stats.avg_vals.underruns <= threshold['average'].underruns:
+        if not stats.avg_vals.underruns <= threshold["average"].underruns:
             underrun_error_text = (
                 f"Number of underruns exceeded threshold.\n"
                 f"Expected underruns: <= {threshold['average'].underruns}\n"
@@ -499,7 +528,7 @@ def test_streaming(
                 assert False, underrun_error_text
 
     assert (
-        stats.avg_vals.late_commands <= threshold['average'].late_commands
+        stats.avg_vals.late_commands <= threshold["average"].late_commands
     ), f"""Number of late commands exceeded threshold.
             Expected late commands: <= {threshold['average'].late_commands}
             Actual late commands:      {stats.avg_vals.late_commands}"""

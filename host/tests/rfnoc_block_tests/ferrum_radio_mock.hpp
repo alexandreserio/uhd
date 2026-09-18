@@ -20,9 +20,6 @@ using namespace std::chrono_literals;
 using namespace uhd::usrp::fbx;
 using namespace uhd::experts;
 
-// Redeclare this here, since it's only defined outside of UHD_API
-noc_block_base::make_args_t::~make_args_t() = default;
-
 namespace {
 /* This class extends mock_reg_iface_t by adding a constructor that initializes
  * some of the read memory to contain the memory size for the radio block.
@@ -56,6 +53,10 @@ public:
 
         // Setup the GPIO addresses
         read_memory[gpio_offset + 0x4] = 0;
+
+        // Disable the complex gain feature
+        read_memory[radio_control_impl::regmap::RADIO_BASE_ADDR
+                    + radio_control_impl::regmap::REG_FEATURES_PRESENT] = 0;
     }
 
     void _poke_cb(uint32_t addr, uint32_t data, uhd::time_spec_t, bool) override
@@ -97,9 +98,11 @@ public:
  */
 constexpr size_t DEFAULT_MTU = 8000;
 
-//! Helper class to make sure we get the most logging. The logging level can be
-// overridden using a special test-specific environment variable,
-// `UHD_UNITTEST_LOG_LEVEL`.
+/*! \brief Helper class to make sure we get the most logging.
+ *
+ * The logging level can be overridden using a special test-specific environment variable,
+ * `UHD_UNITTEST_LOG_LEVEL`.
+ */
 // TODO: Put into own header
 struct uhd_log_enabler
 {
@@ -134,7 +137,7 @@ struct x400_radio_fixture
         , num_output_ports(num_channels)
         , reg_iface(std::make_shared<ferrum_radio_mock_reg_iface_t>(num_channels))
         , rpcs(std::make_shared<uhd::test::ferrum_mock_rpc_server>(device_info))
-        , mbc(std::make_shared<mpmd_mb_controller>(rpcs, device_info))
+        , mbc(std::make_shared<mpmd_mb_controller>(rpcs, device_info, 0))
         , block_container(get_mock_block(RADIO_BLOCK,
               num_channels,
               num_channels,

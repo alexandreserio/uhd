@@ -15,29 +15,21 @@
 #include <uhdlib/rfnoc/clock_iface.hpp>
 #include <uhdlib/rfnoc/rfnoc_device.hpp>
 #include <uhdlib/usrp/common/mpmd_mb_controller.hpp>
-#include <uhdlib/utils/rpc.hpp>
-#include <boost/optional.hpp>
+#include <uhdlib/usrp/common/mpmd_timeouts.hpp>
+#include <uhdlib/usrp/common/rpc.hpp>
+#include <atomic>
 #include <map>
 #include <memory>
+#include <optional>
 
-/*************************************************************************
- * RPC timeout constants for MPMD
- ************************************************************************/
-//! Time between reclaims (ms)
-static constexpr size_t MPMD_RECLAIM_INTERVAL_MS = 1000;
-//! Default timeout value for the init() RPC call (ms)
-static constexpr size_t MPMD_DEFAULT_INIT_TIMEOUT = 120000;
-//! Default timeout value for the reset_timer_and_mgr() RPC call (ms)
-static constexpr size_t MPMD_DEFAULT_REBOOT_TIMEOUT = 200000;
-//! Default timeout value for RPC calls (ms)
-static constexpr size_t MPMD_DEFAULT_RPC_TIMEOUT = 2000;
-//! Short timeout value for RPC calls (ms), used for calls that shouldn't
-// take long. This value can be used to quickly determine a link status.
-static constexpr size_t MPMD_SHORT_RPC_TIMEOUT = 2000;
-//! Claimer loop timeout value for RPC calls (ms).
-static constexpr size_t MPMD_CLAIMER_RPC_TIMEOUT = 10000;
 //! Ethernet address for management and RPC communication
 static const std::string MGMT_ADDR_KEY = "mgmt_addr";
+//! RPC version
+static const std::string RPC_VERSION_KEY = "rpc_version";
+static const std::string RPC_VERSION     = "2";
+// Older devices did not provide an RPC version, but they were all using
+// mprpc, aka version 1.
+static const std::string DEFAULT_RPC_VERSION = "1";
 
 namespace uhd { namespace mpmd {
 
@@ -50,9 +42,10 @@ public:
     using uptr     = std::unique_ptr<mpmd_mboard_impl>;
     using dev_info = std::map<std::string, std::string>;
 
-    //! MPMD-specific implementation of the mb_iface
-    //
-    // This handles the transport management
+    /*! \brief MPMD-specific implementation of the mb_iface.
+     *
+     * This handles the transport management
+     */
     class mpmd_mb_iface;
 
     /*** Static helper *******************************************************/
@@ -61,7 +54,7 @@ public:
      *
      *  \param device_addr Device args. Must contain an mgmt_addr.
      */
-    static boost::optional<device_addr_t> is_device_reachable(
+    static std::optional<device_addr_t> is_device_reachable(
         const device_addr_t& device_addr);
 
     /*** Structors ***********************************************************/
@@ -72,7 +65,9 @@ public:
      * \param mb_args Device args that pertain to this motherboard
      * \param ip_addr RPC client will attempt to connect to this IP address
      */
-    mpmd_mboard_impl(const uhd::device_addr_t& mb_args, const std::string& ip_addr);
+    mpmd_mboard_impl(const uhd::device_addr_t& mb_args,
+        const std::string& ip_addr,
+        const size_t mb_idx);
     ~mpmd_mboard_impl();
 
     /*** Factory *************************************************************/
@@ -80,7 +75,8 @@ public:
      * \param mb_args Device args that pertain to this motherboard
      * \param ip_addr RPC client will attempt to connect to this IP address
      */
-    static uptr make(const uhd::device_addr_t& mb_args, const std::string& addr);
+    static uptr make(
+        const uhd::device_addr_t& mb_args, const std::string& addr, const size_t mb_idx);
 
     /*** API *****************************************************************/
     void init();
@@ -94,9 +90,10 @@ public:
     //! Device information is read back via MPM and stored here.
     uhd::device_addr_t device_info;
 
-    //! Dboard info is read back via MPM and stored here. There will be one
-    // dictionary per dboard; but there's no requirement for the dictionary
-    // to be populated at all.
+    /*! Dboard info is read back via MPM and stored here. There will be one
+     *  dictionary per dboard; but there's no requirement for the dictionary
+     *  to be populated at all.
+     */
     std::vector<uhd::device_addr_t> dboard_info;
 
     //! Reference to this motherboards mb_iface
@@ -182,6 +179,12 @@ private:
      */
     std::string _token;
 
+    //! Motherboard index in the parent mpmd_impl.
+    size_t _mb_index;
+
+    //! Per-mboard logger component (e.g., "MPMD#0").
+    std::string _log_id;
+
     /*! A copy of the device access token
      */
     std::string _rpc_server_addr;
@@ -207,27 +210,30 @@ private:
 class mpmd_impl : public uhd::rfnoc::detail::rfnoc_device
 {
 public:
-    //! Device arg key which will allow finding all devices, even those not
-    // reachable via CHDR.
+    /*! Device arg key which will allow finding all devices, even those not
+     * reachable via CHDR.
+     */
     static const std::string MPM_FINDALL_KEY;
-    //! Port on which the discovery process is listening (default value, it is
-    //  user-overridable)
+    /*! Port on which the discovery process is listening (default value, it is
+     *  user-overridable)
+     */
     static const size_t MPM_DISCOVERY_PORT;
     //! Device arg key to override the discovery port
     static const std::string MPM_DISCOVERY_PORT_KEY;
-    //! Port on which the RPC process is listening (default value, it is user-
-    //  overridable)
+    /*! Port on which the RPC process is listening (default value, it is user-
+     *  overridable)
+     */
     static const size_t MPM_RPC_PORT;
     //! Device arg key to override the RPC port
     static const std::string MPM_RPC_PORT_KEY;
-    //! This is the command that needs to be sent to the discovery port to
-    // trigger a response.
+    /*! This is the command that needs to be sent to the discovery port to
+     *  trigger a response.
+     */
     static const std::string MPM_DISCOVERY_CMD;
-    //! This is the command that will let you measure ping responses from the
-    // device via the discovery process. Useful for MTU discovery.
+    /*! This is the command that will let you measure ping responses from the
+     *  device via the discovery process. Useful for MTU discovery.
+     */
     static const std::string MPM_ECHO_CMD;
-    //! This is the RPC command that will return the last known error from MPM.
-    static const std::string MPM_RPC_GET_LAST_ERROR_CMD;
 
     /**************************************************************************
      * Structors
@@ -260,7 +266,8 @@ private:
      *
      * Does not initialize the device (see setup_mb() for that).
      */
-    mpmd_mboard_impl::uptr claim_and_make(const uhd::device_addr_t& dev_args);
+    mpmd_mboard_impl::uptr claim_and_make(
+        const uhd::device_addr_t& dev_args, const size_t mb_index);
 
     /*! Initialize a single motherboard
      *
@@ -279,9 +286,12 @@ private:
      * \param tree Property tree reference (to the whole tree)
      * \param mb_path Subtree path for this device
      * \param mb Reference to the actual device
+     * \param mb_index Index number of the mboard being initialized
      */
-    static void init_property_tree(
-        uhd::property_tree::sptr tree, fs_path mb_path, mpmd_mboard_impl* mb);
+    static void init_property_tree(uhd::property_tree::sptr tree,
+        fs_path mb_path,
+        mpmd_mboard_impl* mb,
+        const size_t mb_index);
 
     /*************************************************************************
      * Private attributes

@@ -8,9 +8,10 @@ FBX dboard implementation module
 
 from usrp_mpm.dboard_manager import DboardManagerBase
 from usrp_mpm.dboard_manager.x4xx_db import X4xxDbMixin
-from usrp_mpm.periph_manager.x4xx_periphs import get_temp_sensor
+from usrp_mpm.periph_manager.x4xx_periphs import get_temp_sensors
 
 # pylint: disable=too-few-public-methods
+
 
 ###############################################################################
 # Main dboard control class
@@ -19,6 +20,7 @@ class FBX(X4xxDbMixin, DboardManagerBase):
     """
     Holds all dboard specific information and methods of the FBX dboard
     """
+
     #########################################################################
     # Overridables
     #
@@ -26,21 +28,25 @@ class FBX(X4xxDbMixin, DboardManagerBase):
     #########################################################################
     pids = [0x4007]
     rx_sensor_callback_map = {
-        'temperature': 'get_rf_temp_sensor',
-        'rfdc_rate': 'get_rfdc_rate_sensor',
+        "temperature": "get_rf_temp_sensor",
+        "rfdc_rate": "get_rfdc_rate_sensor",
     }
     tx_sensor_callback_map = {
-        'temperature': 'get_rf_temp_sensor',
-        'rfdc_rate': 'get_rfdc_rate_sensor',
+        "temperature": "get_rf_temp_sensor",
+        "rfdc_rate": "get_rfdc_rate_sensor",
     }
     # FBX depends on several RF core implementations which each have
     # compat versions.
     updateable_components = {
-        'fpga': {
-            'compatibility': {
-                'rf_core_full': {
-                    'current': (1, 0),
-                    'oldest': (1, 0),
+        "fpga": {
+            "compatibility": {
+                "rf_core_full": {
+                    "current": (1, 0),
+                    "oldest": (1, 0),
+                },
+                "rf_core_200m": {
+                    "current": (1, 0),
+                    "oldest": (1, 0),
                 },
             }
         },
@@ -67,6 +73,7 @@ class FBX(X4xxDbMixin, DboardManagerBase):
     #########################################################################
     def __init__(self, slot_idx, **kwargs):
         super().__init__("FBX", slot_idx, **kwargs)
+        self._temp_sensors = get_temp_sensors(log=self.log)
 
     #########################################################################
     # UHD (De-)Initialization
@@ -76,9 +83,11 @@ class FBX(X4xxDbMixin, DboardManagerBase):
         Execute necessary init dance to bring up dboard. This happens when a UHD
         session starts.
         """
-        self.log.debug("init() called with args `{}'".format(
-            ",".join(['{}={}'.format(x, args[x]) for x in args])
-        ))
+        self.log.debug(
+            "init() called with args `{}'".format(
+                ",".join(["{}={}".format(x, args[x]) for x in args])
+            )
+        )
         return True
 
     def deinit(self):
@@ -94,7 +103,7 @@ class FBX(X4xxDbMixin, DboardManagerBase):
     # LEDs
     ###########################################################################
     def set_leds(self, channel, rx, trx_rx, trx_tx):
-        """ Set the frontpanel LEDs """
+        """Set the frontpanel LEDs"""
         assert channel in (0, 1, 2, 3)
 
     ###########################################################################
@@ -109,4 +118,4 @@ class FBX(X4xxDbMixin, DboardManagerBase):
             f"TMP112 DB{self.slot_idx} Top",
             f"TMP112 DB{self.slot_idx} Bottom",
         ]
-        return get_temp_sensor(sensor_names, log=self.log)
+        return self._temp_sensors.read_thermal_sensor_value(sensor_names)

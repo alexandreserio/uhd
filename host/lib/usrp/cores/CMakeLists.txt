@@ -20,6 +20,12 @@ if(ENABLE_B100 OR ENABLE_USRP2)
     )
 endif(ENABLE_B100 OR ENABLE_USRP2)
 
+if(ENABLE_B300)
+    LIBUHD_APPEND_SOURCES(
+        ${CMAKE_CURRENT_SOURCE_DIR}/spi_core_adrv.cpp
+    )
+endif()
+
 if(ENABLE_X300)
     LIBUHD_APPEND_SOURCES(
         ${CMAKE_CURRENT_SOURCE_DIR}/xport_adapter_ctrl.cpp
@@ -27,6 +33,7 @@ if(ENABLE_X300)
 endif()
 
 LIBUHD_APPEND_SOURCES(
+    ${CMAKE_CURRENT_SOURCE_DIR}/complex_gain_3000.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dma_fifo_core_3000.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/gpio_atr_3000.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/i2c_core_100_wb32.cpp

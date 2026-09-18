@@ -22,17 +22,17 @@
 %>\
   // If requested buffer size is 0, use the minimum SRL-based FIFO size.
   // Otherwise, make sure it's at least two MTU-sized packets.
-  localparam REQ_BUFF_SIZE_${ep_name} = ${str(seps[sep]["buff_size"])};
-  localparam INGRESS_BUFF_SIZE_${ep_name} =
-    REQ_BUFF_SIZE_${ep_name} == 0             ? 5         :
-    REQ_BUFF_SIZE_${ep_name} < 2*(2**${ep_name}_MTU) ? ${ep_name}_MTU+1 :
-                                         $clog2(REQ_BUFF_SIZE_${ep_name});
+  localparam REQ_BUFF_DEPTH_${ep_name} = ${str(seps[sep]["buff_size"])};
+  localparam INGRESS_BUFF_DEPTH_${ep_name} =
+    REQ_BUFF_DEPTH_${ep_name} == 0             ? 32 :
+    REQ_BUFF_DEPTH_${ep_name} < 2*(2**${ep_name}_MTU) ? 2*(2**${ep_name}_MTU) :
+                                          REQ_BUFF_DEPTH_${ep_name};
 
-  wire [BLOCK_CHDR_W-1:0] ${axis_outputs[sep].format(sep,"tdata")};
+  wire [${seps[sep]["block_chdr_width"]}-1:0] ${axis_outputs[sep].format(sep,"tdata")};
   wire                    ${axis_outputs[sep].format(sep,"tlast")};
   wire                    ${axis_outputs[sep].format(sep,"tvalid")};
   wire                    ${axis_outputs[sep].format(sep,"tready")};
-  wire [BLOCK_CHDR_W-1:0] ${axis_inputs[sep].format(sep,"tdata")};
+  wire [${seps[sep]["block_chdr_width"]}-1:0] ${axis_inputs[sep].format(sep,"tdata")};
   wire                    ${axis_inputs[sep].format(sep,"tlast")};
   wire                    ${axis_inputs[sep].format(sep,"tvalid")};
   wire                    ${axis_inputs[sep].format(sep,"tready")};
@@ -45,14 +45,15 @@
     .DEVICE_FAMILY      ("${config.device.family}"),
     .PROTOVER           (PROTOVER),
     .CHDR_W             (${ep_name + "_W"}),
-    .BLOCK_CHDR_W       (BLOCK_CHDR_W),
+    .BLOCK_CHDR_W       (${seps[sep]["block_chdr_width"]}),
     .AXIS_CTRL_EN       (${int(seps[sep]["ctrl"])}),
     .AXIS_DATA_EN       (${int(seps[sep]["data"])}),
     .NUM_DATA_I         (${int(seps[sep]["num_data_i"])}),
     .NUM_DATA_O         (${int(seps[sep]["num_data_o"])}),
     .INST_NUM           (${i}),
     .CTRL_XBAR_PORT     (${i+1}),
-    .INGRESS_BUFF_SIZE  (INGRESS_BUFF_SIZE_${ep_name}),
+    .INGRESS_BUFF_DEPTH (INGRESS_BUFF_DEPTH_${ep_name}),
+    .MAX_NUM_URAM_BLOCKS(${int(seps[sep]["max_num_uram_blocks"])}),
     .MTU                (${ep_name + "_MTU"}),
     .REPORT_STRM_ERRS   (1)
   ) ${sep}_i (

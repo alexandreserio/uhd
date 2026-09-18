@@ -84,9 +84,9 @@ def parse_args():
         "-d",
         "--duration",
         type=float,
-        default=5.0,
+        default=0.5,
         help="""specifies the transmit duration in seconds.
-        If duration = -1 and --dram argument is used, the waveform pattern is repeated continuously until stopped.
+        If duration = 0 and --dram argument is used, the waveform pattern is repeated continuously until stopped.
         If duration > 0, the transmission stops after the configured duration.
         [Default = 0.5]""",
     )
@@ -95,8 +95,8 @@ def parse_args():
         "--channels",
         nargs="+",
         type=int,
-        default=0,
-        help='specifies the channels to use (e.g., "0", "1", "0 1", etc) [Default = 0]',
+        default=[0],
+        help='specifies the channels to use (e.g., "0", "1", "0 1", etc) [Default = [0]]',
     )
     parser.add_argument(
         "-g",

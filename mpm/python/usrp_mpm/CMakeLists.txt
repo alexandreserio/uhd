@@ -13,6 +13,7 @@ set(USRP_MPM_TOP_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/aurora_control.py
     ${CMAKE_CURRENT_SOURCE_DIR}/bfrfs.py
     ${CMAKE_CURRENT_SOURCE_DIR}/bist.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/bootgen_wrapper.py
     ${CMAKE_CURRENT_SOURCE_DIR}/components.py
     ${CMAKE_CURRENT_SOURCE_DIR}/compat_num.py
     ${CMAKE_CURRENT_SOURCE_DIR}/discovery.py
@@ -24,6 +25,7 @@ set(USRP_MPM_TOP_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/mpmlog.py
     ${CMAKE_CURRENT_SOURCE_DIR}/mpmtypes.py
     ${CMAKE_CURRENT_SOURCE_DIR}/mpmutils.py
+    ${CMAKE_CURRENT_SOURCE_DIR}/pb_utils.py
     ${CMAKE_CURRENT_SOURCE_DIR}/prefs.py
     ${CMAKE_CURRENT_SOURCE_DIR}/process_manager.py
     ${CMAKE_CURRENT_SOURCE_DIR}/rpc_server.py

@@ -73,18 +73,17 @@ endif()
 if(ENABLE_PYMOD_UTILS OR ENABLE_UTILS)
     ### UHD Images downloader
     # Configure the scripts
-    file(READ ${CMAKE_CURRENT_SOURCE_DIR}/../../images/manifest.txt CMAKE_MANIFEST_CONTENTS)
+    # Re-run CMake configure whenever the manifest changes.
+    set(UHD_IMAGES_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/../../images/manifest.txt")
+    set_property(
+        DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${UHD_IMAGES_MANIFEST}"
+    )
+    file(READ "${UHD_IMAGES_MANIFEST}" CMAKE_MANIFEST_CONTENTS)
     configure_file(
         ${CMAKE_CURRENT_SOURCE_DIR}/uhd_images_downloader.py.in
         ${CMAKE_CURRENT_BINARY_DIR}/uhd_images_downloader.py
     @ONLY)
-    # TODO: FIXME when know how.
-    # This is a hack to force cmake regenerate uhd_images_downloader.py
-    # whenever manifest.txt file changed.
-    configure_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../images/manifest.txt
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../images/manifest.txt
-    COPYONLY)
 
     UHD_INSTALL(PROGRAMS
         ${CMAKE_CURRENT_BINARY_DIR}/uhd_images_downloader.py
@@ -231,7 +230,7 @@ endif(LINUX AND ENABLE_USB)
 foreach(util_source ${util_share_sources})
     get_filename_component(util_name ${util_source} NAME_WE)
     add_executable(${util_name} ${util_source})
-    target_link_libraries(${util_name} PUBLIC uhd Boost::program_options)
+    target_link_libraries(${util_name} PUBLIC uhd Boost::program_options Boost::filesystem)
     UHD_INSTALL(TARGETS ${util_name} RUNTIME DESTINATION ${PKG_LIB_DIR}/utils COMPONENT utilities)
 endforeach(util_source)
 foreach(util_source ${util_share_sources_py})

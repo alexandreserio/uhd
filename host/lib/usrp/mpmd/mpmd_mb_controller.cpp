@@ -4,17 +4,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 
+#include <uhd/utils/log.hpp>
 #include <uhdlib/usrp/common/mpmd_mb_controller.hpp>
+#include <uhdlib/usrp/common/mpmd_timeouts.hpp>
 #include <future>
 #include <vector>
 
 using namespace uhd::rfnoc;
 using namespace uhd;
-
-namespace {
-//! Default timeout value for RPC calls that we know can take long (ms)
-constexpr size_t MPMD_DEFAULT_LONG_TIMEOUT = 30000; // ms
-} // namespace
 
 mpmd_mb_controller::fpga_onload::fpga_onload() {}
 
@@ -114,9 +111,13 @@ std::string mpmd_mb_controller::gpio_power::get_external_power_status(
     return _rpcc->dio_get_external_power_state(port);
 }
 
-mpmd_mb_controller::mpmd_mb_controller(
-    uhd::usrp::mpmd_rpc_iface::sptr rpcc, uhd::device_addr_t device_info)
-    : _rpc(rpcc), _device_info(device_info)
+mpmd_mb_controller::mpmd_mb_controller(uhd::usrp::mpmd_rpc_iface::sptr rpcc,
+    uhd::device_addr_t device_info,
+    const size_t mb_idx)
+    : _mb_index(mb_idx)
+    , _log_id(std::to_string(mb_idx) + "/MPMD::MB_CTRL")
+    , _rpc(rpcc)
+    , _device_info(device_info)
 {
     const size_t num_tks = _rpc->get_num_timekeepers();
     for (size_t tk_idx = 0; tk_idx < num_tks; tk_idx++) {
@@ -125,7 +126,7 @@ mpmd_mb_controller::mpmd_mb_controller(
 
     // Enumerate sensors
     auto sensor_list = _rpc->get_mb_sensors();
-    UHD_LOG_DEBUG("MPMD", "Found " << sensor_list.size() << " motherboard sensors.");
+    UHD_LOG_DEBUG(_log_id, "Found " << sensor_list.size() << " motherboard sensors.");
     _sensor_names.insert(sensor_list.cbegin(), sensor_list.cend());
 
     // Enumerate GPIO banks that are under mb_controller control
@@ -148,8 +149,7 @@ mpmd_mb_controller::mpmd_mb_controller(
     }
 
     if (_rpc->supports_feature("gpio_power")) {
-        _gpio_power = std::make_shared<gpio_power>(
-            std::make_shared<uhd::usrp::dio_rpc>(get_rpc_client()), _gpio_banks);
+        _gpio_power = std::make_shared<gpio_power>(get_rpc_client(), _gpio_banks);
         register_feature(_gpio_power);
     }
 }
@@ -197,8 +197,7 @@ std::string mpmd_mb_controller::get_mboard_name() const
 
 void mpmd_mb_controller::set_time_source(const std::string& source)
 {
-    _rpc->get_raw_rpc_client()->notify_with_token(
-        MPMD_DEFAULT_LONG_TIMEOUT, "set_time_source", source);
+    _rpc->set_time_source(source);
     if (!_sync_source_updaters.empty()) {
         mb_controller::sync_source_t sync_source;
         sync_source["time_source"] = source;
@@ -220,8 +219,7 @@ std::vector<std::string> mpmd_mb_controller::get_time_sources() const
 
 void mpmd_mb_controller::set_clock_source(const std::string& source)
 {
-    _rpc->get_raw_rpc_client()->notify_with_token(
-        MPMD_DEFAULT_LONG_TIMEOUT, "set_clock_source", source);
+    _rpc->set_clock_source(source);
     if (!_sync_source_updaters.empty()) {
         mb_controller::sync_source_t sync_source;
         sync_source["clock_source"] = source;
@@ -256,8 +254,7 @@ void mpmd_mb_controller::set_sync_source(const device_addr_t& sync_source)
     for (const auto& key : sync_source.keys()) {
         sync_source_map[key] = sync_source.get(key);
     }
-    _rpc->get_raw_rpc_client()->notify_with_token(
-        MPMD_DEFAULT_LONG_TIMEOUT, "set_sync_source", sync_source_map);
+    _rpc->set_sync_source(sync_source_map);
     if (!_sync_source_updaters.empty()) {
         for (const auto& updater : _sync_source_updaters) {
             updater(sync_source);
@@ -326,7 +323,7 @@ std::vector<std::string> mpmd_mb_controller::get_gpio_banks() const
 std::vector<std::string> mpmd_mb_controller::get_gpio_srcs(const std::string& bank) const
 {
     if (!_gpio_srcs.count(bank)) {
-        UHD_LOG_ERROR("MPMD", "Invalid GPIO bank: `" << bank << "'");
+        UHD_LOG_ERROR(_log_id, "Invalid GPIO bank: `" << bank << "'");
         throw uhd::key_error(std::string("Invalid GPIO bank: ") + bank);
     }
     return _gpio_srcs.at(bank);
@@ -335,7 +332,7 @@ std::vector<std::string> mpmd_mb_controller::get_gpio_srcs(const std::string& ba
 std::vector<std::string> mpmd_mb_controller::get_gpio_src(const std::string& bank)
 {
     if (!_gpio_srcs.count(bank)) {
-        UHD_LOG_ERROR("MPMD", "Invalid GPIO bank: `" << bank << "'");
+        UHD_LOG_ERROR(_log_id, "Invalid GPIO bank: `" << bank << "'");
         throw uhd::key_error(std::string("Invalid GPIO bank: ") + bank);
     }
     if (_current_gpio_src.count(bank)) {
@@ -349,7 +346,7 @@ void mpmd_mb_controller::set_gpio_src(
     const std::string& bank, const std::vector<std::string>& src)
 {
     if (!_gpio_srcs.count(bank)) {
-        UHD_LOG_ERROR("MPMD", "Invalid GPIO bank: `" << bank << "'");
+        UHD_LOG_ERROR(_log_id, "Invalid GPIO bank: `" << bank << "'");
         throw uhd::key_error(std::string("Invalid GPIO bank: ") + bank);
     }
     _rpc->set_gpio_src(bank, src);
@@ -428,7 +425,8 @@ bool mpmd_mb_controller::_pre_timekeeper_synchronize(
     // device args, but we don't have access to them here. Might be a useful
     // change.
     std::map<std::string, std::string> sync_args{};
-    std::list<std::map<std::string, std::string>> collated_sync_args;
+    std::vector<std::map<std::string, std::string>> collated_sync_args;
+    collated_sync_args.reserve(mpmd_mb_controllers.size());
     // Now prime the sync args (in parallel) on all relevant devices.
     for (auto& mbc : mpmd_mb_controllers) {
         sync_tasks.emplace_back(std::async(
@@ -438,7 +436,7 @@ bool mpmd_mb_controller::_pre_timekeeper_synchronize(
         try {
             collated_sync_args.push_back(sync_task.get());
         } catch (const std::exception& e) {
-            UHD_LOGGER_ERROR("MPMD") << "Synchronization error: " << e.what();
+            UHD_LOGGER_ERROR(_log_id) << "Synchronization error: " << e.what();
             return false;
         }
     }
@@ -462,7 +460,7 @@ bool mpmd_mb_controller::_pre_timekeeper_synchronize(
         try {
             sync_task.get();
         } catch (const std::exception& e) {
-            UHD_LOGGER_ERROR("MPMD") << "Synchronization error: " << e.what();
+            UHD_LOGGER_ERROR(_log_id) << "Synchronization error: " << e.what();
             return false;
         }
     }
@@ -490,7 +488,7 @@ std::map<std::string, std::string> mpmd_mb_controller::_synchronize(
 }
 
 std::map<std::string, std::string> mpmd_mb_controller::_aggregate_sync_info(
-    const std::list<std::map<std::string, std::string>>& collated_sync_args)
+    const std::vector<std::map<std::string, std::string>>& collated_sync_args)
 {
     return _rpc->aggregate_sync_data(collated_sync_args);
 }

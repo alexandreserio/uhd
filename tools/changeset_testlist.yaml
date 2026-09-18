@@ -53,6 +53,18 @@
     - hw.rf.x410
     - hw.streaming.x410
     - devtest.x410
+- re: host/lib/usrp/dboard/hbx/
+  add:
+    - uhd.build.all
+    - hw.rf.x420
+    - hw.streaming.x420
+    - devtest.x420
+- re: host/lib/usrp/dboard/fbx/
+  add:
+    - uhd.build.all
+    - hw.rf.x440
+    - hw.streaming.x440
+    - devtest.x440
 - re: host/lib/usrp/dboard/e3xx
   add:
     - uhd.build.all
@@ -107,6 +119,12 @@
     - uhd.build.all
     - hw.rf.x3xx
     - hw.rf.n2xx
+- re: host/lib/usrp/b300/
+  add:
+    - uhd.build.all
+    - hw.rf.b3xx
+    - hw.streaming.b3xx
+    - devtest.b3xx
 - re: host/lib/usrp/b200/
   add:
     - uhd.build.all
@@ -160,7 +178,7 @@
     - hw.rf.all
     - devtest.all
 # Catchall rule for UHD changes
-- re: host/.+cpp$|host/.*CMakeLists.txt|host/.+hpp$|host/.+ipp$|host/.+c$|host/.+h$|host/.+py$
+- re: host/.+cpp$|host/.*CMakeLists.txt|host/.+hpp$|host/.+ipp$|host/.+c$|host/.+h$|host/.+py$|^host/[^/]+\.cmake$|^host/cmake/.+\.in$
   add:
     - uhd.build.all
     - uhd.utest.all
@@ -204,21 +222,30 @@
   add:
     - hw.streaming.x4xx
   stop: False
-- re: ^mpm/.+/rfdc|^mpm/.+_manager/x4xx
+- re: ^mpm/.+/rfdc|^mpm/.+_manager/x4xx|^mpm/.+/lmk04832.py|x4xx_bist$
   add:
     - mpm.build.x4xx
     - hw.rf.x4xx
     - devtest.x4xx
+- re: x4xx_bist$
+  add:
+    - mpm.build.x4xx
+    - devtest.x4xx
+- re: zbx.py$
+  add:
+    - mpm.build.x4xx
+    - hw.rf.x410
+    - devtest.x410
+- re: hbx.py$
+  add:
+    - mpm.build.x4xx
+    - hw.rf.x420
+    - devtest.x420
 - re: fbx.py$
   add:
     - mpm.build.x4xx
     - hw.rf.x440
     - devtest.x440
-- re: zbx.py
-  add:
-    - mpm.build.x4xx
-    - hw.rf.x410
-    - devtest.x410
 - re: e31x_db_manager..pp$|^mpm/.+/periph_manager/e31x|e31x_db.py$
   add:
     - mpm.build.e310
@@ -283,7 +310,22 @@
   add:
     - fpga.usrp3.x4xx
 
+# CPLD related changes
+- re: fpga/usrp3/top/x400/cpld
+  add:
+    - fpga.usrp3.cpld.x4xx
+- re: fpga/usrp3/top/x400/dboards/.bx/cpld
+  add:
+    - fpga.usrp3.cpld.x4xx
+- re: fpga/usrp3/top/x400/constraints/timing/shared_constants.sdc
+  add:
+    - fpga.usrp3.cpld.x4xx
+  stop: False
+
 # Device-specific changes.
+# exclude documentation from triggering FPGA builds
+- re: fpga/usrp3/top/x400/doc
+  stop: True
 - re: fpga/usrp3/top/x400
   add:
     - fpga.usrp3.x4xx
@@ -314,6 +356,12 @@
 - re: host/include/uhd/rfnoc/core/n3.._bsp.yml
   add:
     - fpga.usrp3.n3xx
+- re: fpga/usrp3/top/b300
+  add:
+    - fpga.usrp3.b310
+- re: host/include/uhd/rfnoc/core/b310_bsp.yml
+  add:
+    - fpga.usrp3.b310
 
 # CPLD related changes
 - re: fpga/usrp3/top/x400/cpld
@@ -385,27 +433,30 @@
     - fpga.usrp3.cpld.x3xx
     - fpga.usrp3.testbenches
     - fpga.usrp3.regmaps
-- re: .ci/hwtools
+- re: .ci/hwtools/root.py
   add:
     - fpga.usrp3.all
     - fpga.usrp3.cpld.x4xx
     - fpga.usrp3.cpld.x3xx
     - fpga.usrp3.testbenches
     - fpga.usrp3.regmaps
+- re: .ci/hwtools
+  add:
+    - fpga.usrp3.regmaps
 # Device-specific pipeline changes.
-- re: .ci/fpga/devices/job-build-x400.yml
+- re: .ci/fpga/devices/job-build-fpga-x400.yml
   add:
     - fpga.usrp3.x4xx
-- re: .ci/fpga/devices/job-build-x300.yml
+- re: .ci/fpga/devices/job-build-fpga-x300.yml
   add:
     - fpga.usrp3.x3xx
-- re: .ci/fpga/devices/job-build-e31x.yml
+- re: .ci/fpga/devices/job-build-fpga-e31x.yml
   add:
     - fpga.usrp3.e31x
-- re: .ci/fpga/devices/job-build-e320.yml
+- re: .ci/fpga/devices/job-build-fpga-e320.yml
   add:
     - fpga.usrp3.e320
-- re: .ci/fpga/devices/job-build-n3xx.yml
+- re: .ci/fpga/devices/job-build-fpga-n3xx.yml
   add:
     - fpga.usrp3.n3xx
 

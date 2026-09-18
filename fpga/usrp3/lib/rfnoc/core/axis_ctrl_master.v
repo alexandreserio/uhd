@@ -10,11 +10,16 @@
 //  to AXIS-Control requests, then sent over the master AXI-Stream port.
 //  Responses are received on the AXI-Stream slave port, and converted
 //  to Control-Port responses.
-//  NOTE: Transactions are not buffered so there is no need for flow 
+//  NOTE: Transactions are not buffered so there is no need for flow
 //        control or throttling.
 //
 // Parameters:
-//   - THIS_PORTID     : The local port-ID of this control port
+//   - THIS_PORTID      : The local port-ID of this control port
+//   - SKIP_WR_ACK_WAIT : When set to 1, write requests will ACK on CtrlPort
+//                        immediately without waiting for the AXIS-Ctrl
+//                        response. The response packets will be discarded.
+//                        Set to 0 to wait for the response before
+//                        ACK'ing on CtrlPort, which is the normal behavior.
 //
 // Signals:
 //   - s_axis_ctrl_*   : Input control stream (AXI-Stream) for responses
@@ -23,7 +28,8 @@
 //   - ctrlport_resp_* : Control-port master response port
 
 module axis_ctrl_master #(
-  parameter [9:0] THIS_PORTID = 10'd0
+  parameter [9:0] THIS_PORTID      = 10'd0,
+  parameter       SKIP_WR_ACK_WAIT = 0
 )(
   // Clock and reset
   input  wire         clk,
@@ -76,13 +82,14 @@ module axis_ctrl_master #(
   localparam [3:0] ST_RESP_TS_LO    = 4'd9;   // Receiving AXIS-Control response timestamp (low bits)
   localparam [3:0] ST_RESP_TS_HI    = 4'd10;  // Receiving AXIS-Control response timestamp (high bits)
   localparam [3:0] ST_RESP_OP_WORD  = 4'd11;  // Receiving AXIS-Control response operation word
-  localparam [3:0] ST_RESP_OP_DATA  = 4'd12;  // Receiving AXIS-Control response data word     
+  localparam [3:0] ST_RESP_OP_DATA  = 4'd12;  // Receiving AXIS-Control response data word
   localparam [3:0] ST_SHORT_PKT_ERR = 4'd13;  // Response was too short. Send a dummy response on ctrlport
-  localparam [3:0] ST_DROP_LONG_PKT = 4'd14;  // Response was too long. Dump the rest of the packet
+  localparam [3:0] ST_DROP_PKT      = 4'd14;  // Drop rest of packet (too long or unexpected ACK)
+  localparam [3:0] ST_IMMEDIATE_ACK = 4'd15;  // Immediate ACK for write when SKIP_WR_ACK_WAIT=1
 
   // State variables
   reg [3:0]   state = ST_IDLE;    // Current state for FSM
-  reg [5:0]   seq_num = 6'd0;     // Expected seqnum for response
+  reg [7:0]   seq_num = 8'd0;     // Expected seqnum for response
   // Request state
   reg [3:0]   req_opcode;         // Cached opcode for transaction request
   reg [19:0]  req_addr;           // Cached address for transaction request
@@ -101,18 +108,24 @@ module axis_ctrl_master #(
   always @(posedge clk) begin
     if (rst) begin
       state <= ST_IDLE;
-      seq_num <= 6'd0;
+      seq_num <= 8'd0;
     end else begin
       case (state)
 
         // Ready to receive a request on ctrlport
         // ------------------------------------
         ST_IDLE: begin
-          if (ctrlport_req_wr | ctrlport_req_rd) begin
+          if (SKIP_WR_ACK_WAIT && s_axis_ctrl_tvalid) begin
+            // When SKIP_WR_ACK_WAIT is enabled, parse the response header to
+            // determine the next step. This may be a delayed response for a
+            // write request that we ACK'ed immediately, or it may be a normal
+            // response to a read request.
+            state <= ST_RESP_HDR_LO;
+          end else if (ctrlport_req_wr | ctrlport_req_rd) begin
             // A transaction was posted on the slave ctrlport...
             // Cache the opcode
             if (ctrlport_req_wr & ctrlport_req_rd)
-              req_opcode   <= AXIS_CTRL_OPCODE_WRITE_READ;
+              req_opcode   <= AXIS_CTRL_OPCODE_READ_WRITE;
             else if (ctrlport_req_rd)
               req_opcode   <= AXIS_CTRL_OPCODE_READ;
             else
@@ -131,7 +144,7 @@ module axis_ctrl_master #(
           end
         end
 
-        // Send a request AXIS comand
+        // Send a request AXIS command
         // (a state for each stage in the packet)
         // ------------------------------------
         ST_REQ_HDR_LO: begin
@@ -151,23 +164,31 @@ module axis_ctrl_master #(
             state <= ST_REQ_OP_WORD;
         end
         ST_REQ_OP_WORD: begin
-          if (m_axis_ctrl_tready)
-            state <= ST_REQ_OP_DATA;
+          if (m_axis_ctrl_tready) begin
+            // READ requests carry no data word, so end the packet here.
+            if (req_opcode == AXIS_CTRL_OPCODE_READ)
+              state <= ST_RESP_HDR_LO;
+            else
+              state <= ST_REQ_OP_DATA;
+          end
         end
         ST_REQ_OP_DATA: begin
-          if (m_axis_ctrl_tready)
-            state <= ST_RESP_HDR_LO;
+          if (m_axis_ctrl_tready) begin
+            if (SKIP_WR_ACK_WAIT && req_opcode == AXIS_CTRL_OPCODE_WRITE) begin
+              state <= ST_IMMEDIATE_ACK;
+            end else begin
+              state <= ST_RESP_HDR_LO;
+            end
+          end
         end
 
-        // Receive a response AXIS comand
+        // Receive a response AXIS command
         // (a state for each stage in the packet)
         // ------------------------------------
         ST_RESP_HDR_LO: begin
           if (s_axis_ctrl_tvalid) begin
             // Remeber if the packet is supposed to have a timestamp
             resp_has_time <= axis_ctrl_get_has_time(s_axis_ctrl_tdata);
-            // Check for a sequence error
-            resp_seq_err <= (axis_ctrl_get_seq_num(s_axis_ctrl_tdata) != seq_num);
             // Assert a command error if:
             // - The port ID does not match
             // - The response was too short (the next check)
@@ -183,6 +204,8 @@ module axis_ctrl_master #(
         end
         ST_RESP_HDR_HI: begin
           if (s_axis_ctrl_tvalid) begin
+            // Check for a sequence error
+            resp_seq_err <= (axis_ctrl_get_seq_num(s_axis_ctrl_tdata) != seq_num);
             if (!s_axis_ctrl_tlast) begin
               state <= resp_has_time ? ST_RESP_TS_LO : ST_RESP_OP_WORD;
             end else begin
@@ -216,25 +239,33 @@ module axis_ctrl_master #(
         end
         ST_RESP_OP_WORD: begin
           if (s_axis_ctrl_tvalid) begin
-            if (!s_axis_ctrl_tlast) begin
-              // Assert a command error if opcode and addr in request does not match response
-              resp_cmd_err <= resp_cmd_err ||
-                              (axis_ctrl_get_opcode(s_axis_ctrl_tdata) != req_opcode) ||
-                              (axis_ctrl_get_address(s_axis_ctrl_tdata) != req_addr);
-              resp_status <= axis_ctrl_get_status(s_axis_ctrl_tdata);
-              state <= ST_RESP_OP_DATA;
+            // Assert a command error if opcode and addr in request does not
+            // match response.
+            resp_cmd_err <= resp_cmd_err ||
+                            (axis_ctrl_get_opcode(s_axis_ctrl_tdata) != req_opcode) ||
+                            (axis_ctrl_get_address(s_axis_ctrl_tdata) != req_addr);
+            resp_status <= axis_ctrl_get_status(s_axis_ctrl_tdata);
+            if (req_opcode == AXIS_CTRL_OPCODE_WRITE) begin
+              // Writes don't require data words in the response, so they get
+              // acknowledged in this state if there's no data.
+              state   <= s_axis_ctrl_tlast ? ST_IDLE : ST_RESP_OP_DATA;
+              seq_num <= seq_num + 8'd1;
             end else begin
-              // Response was too short
-              resp_cmd_err <= 1'b1;
-              state <= ST_SHORT_PKT_ERR;
+              // Reads do require additional data words.
+              if (s_axis_ctrl_tlast) begin
+                resp_cmd_err <= 1'b1;
+                state        <= ST_SHORT_PKT_ERR;
+              end else begin
+                state <= ST_RESP_OP_DATA;
+              end
             end
           end
         end
         ST_RESP_OP_DATA: begin
           if (s_axis_ctrl_tvalid) begin
             // If the packet was too long then just drop the rest without complaining
-            state <= s_axis_ctrl_tlast ? ST_IDLE : ST_DROP_LONG_PKT;
-            seq_num <= seq_num + 6'd1;
+            state <= s_axis_ctrl_tlast ? ST_IDLE : ST_DROP_PKT;
+            seq_num <= seq_num + 8'd1;
           end
         end
 
@@ -243,9 +274,17 @@ module axis_ctrl_master #(
         ST_SHORT_PKT_ERR: begin
           state <= ST_IDLE;
         end
-        ST_DROP_LONG_PKT: begin
+        ST_DROP_PKT: begin
           if (s_axis_ctrl_tvalid && s_axis_ctrl_tlast)
             state <= ST_IDLE;
+        end
+
+        // SKIP_WR_ACK_WAIT states
+        // ------------------------------------
+        ST_IMMEDIATE_ACK: begin
+          // Provide immediate ACK for write operation
+          state <= ST_IDLE;
+          seq_num <= seq_num + 8'd1;
         end
 
         default: begin
@@ -258,16 +297,23 @@ module axis_ctrl_master #(
 
   // Logic to drive m_axis_ctrl_*
   // ------------------------------------
+
+  // Number of data words present in requests. 1 for writes, 0 for reads.
+  wire [3:0] num_data = (req_opcode == AXIS_CTRL_OPCODE_READ) ? 4'd0 : 4'd1;
+
+  // Number of data words requested. This module only requests a single word.
+  wire [3:0] req_size = (req_opcode == AXIS_CTRL_OPCODE_READ) ? 4'd1 : 4'd0;
+
   always @(*) begin
     case (state)
       ST_REQ_HDR_LO: begin
         m_axis_ctrl_tdata = axis_ctrl_build_hdr_lo(
-          1'b0 /* is_ack*/, req_has_time, seq_num,
-          4'd1 /* num_data */, THIS_PORTID, req_portid);
+          req_rem_epid, 1'b0 /* is_ack */, req_has_time,
+          num_data, req_portid);
       end
       ST_REQ_HDR_HI: begin
         m_axis_ctrl_tdata = axis_ctrl_build_hdr_hi(
-          req_rem_portid, req_rem_epid);
+          req_size, seq_num, req_rem_portid, THIS_PORTID);
       end
       ST_REQ_TS_LO: begin
         m_axis_ctrl_tdata = req_time[31:0];
@@ -293,7 +339,8 @@ module axis_ctrl_master #(
                               (state == ST_REQ_TS_HI)   ||
                               (state == ST_REQ_OP_WORD) ||
                               (state == ST_REQ_OP_DATA);
-  assign m_axis_ctrl_tlast  = (state == ST_REQ_OP_DATA);
+  assign m_axis_ctrl_tlast  = (state == ST_REQ_OP_DATA) ||
+                              (state == ST_REQ_OP_WORD && req_opcode == AXIS_CTRL_OPCODE_READ);
 
   // Logic to backpressure responses
   // ------------------------------------
@@ -303,14 +350,32 @@ module axis_ctrl_master #(
                               (state == ST_RESP_TS_HI)   ||
                               (state == ST_RESP_OP_WORD) ||
                               (state == ST_RESP_OP_DATA) ||
-                              (state == ST_DROP_LONG_PKT);
+                              (state == ST_DROP_PKT);
 
   // Logic to drive Control-port response
   // ------------------------------------
-  assign ctrlport_resp_ack    = (state == ST_RESP_OP_DATA && s_axis_ctrl_tvalid) || 
-                                (state == ST_SHORT_PKT_ERR); 
-  assign ctrlport_resp_status = resp_cmd_err ? AXIS_CTRL_STS_CMDERR : 
-                                  (resp_seq_err ? AXIS_CTRL_STS_WARNING : resp_status);
-  assign ctrlport_resp_data   = (state == ST_SHORT_PKT_ERR) ? 32'h0 : s_axis_ctrl_tdata;
+  assign ctrlport_resp_ack    = (state == ST_SHORT_PKT_ERR) ||
+                                (state == ST_IMMEDIATE_ACK) ||
+                                // Acknowledge reads in the op-data state
+                                (state == ST_RESP_OP_DATA && s_axis_ctrl_tvalid) ||
+                                // Acknowledge writes in the op-word state,
+                                // unless we acknoweldged it immediately (i.e.,
+                                // SKIP_WR_ACK_WAIT == 1).
+                                (state == ST_RESP_OP_WORD &&
+                                 s_axis_ctrl_tvalid && s_axis_ctrl_tlast &&
+                                 req_opcode == AXIS_CTRL_OPCODE_WRITE &&
+                                 !SKIP_WR_ACK_WAIT);
+  // For write responses that terminate at the op-word, resp_status has not yet
+  // been clocked in when the ack fires; use the live input status directly.
+  wire write_ack_at_op_word = !SKIP_WR_ACK_WAIT && (state == ST_RESP_OP_WORD) &&
+                               s_axis_ctrl_tvalid && s_axis_ctrl_tlast &&
+                               (req_opcode == AXIS_CTRL_OPCODE_WRITE);
+  assign ctrlport_resp_status = (state == ST_IMMEDIATE_ACK)  ? AXIS_CTRL_STS_OKAY :
+                                resp_cmd_err                 ? AXIS_CTRL_STS_CMDERR :
+                                resp_seq_err                 ? AXIS_CTRL_STS_WARNING :
+                                write_ack_at_op_word         ? axis_ctrl_get_status(s_axis_ctrl_tdata) :
+                                                               resp_status;
+  assign ctrlport_resp_data   = ((state == ST_SHORT_PKT_ERR) ||
+                                 (state == ST_IMMEDIATE_ACK)) ? 32'h0 : s_axis_ctrl_tdata;
 
 endmodule // axis_ctrl_master

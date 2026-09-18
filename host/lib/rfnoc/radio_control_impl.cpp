@@ -5,6 +5,7 @@
 //
 
 #include <uhd/exception.hpp>
+#include <uhd/features/complex_gain_iface.hpp>
 #include <uhd/rfnoc/mb_controller.hpp>
 #include <uhd/rfnoc/multichan_register_iface.hpp>
 #include <uhd/rfnoc/register_iface.hpp>
@@ -15,31 +16,31 @@
 #include <numeric>
 #include <tuple>
 
-#include <stdio.h> //added [ALEX]
-#include <time.h> //added [ALEX]
-#include <stdbool.h> //added [ALEX]
-#include <pwd.h> //added [ALEX]
-#include <string.h> //added [ALEX]
-#include <stdlib.h> //added [ALEX]
 
-// Socket includes
-#include <arpa/inet.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#define PORT 8100
-// #include "/home/ue-5g/oai/openairinterface5g/common/utils/assertions.h"
-static int flag = 0;
-// Socket includes end
+// Forward-declare factories for complex gain
+namespace uhd { namespace features {
+
+tx_complex_gain_iface::sptr make_tx_complex_gain_iface(
+    uhd::rfnoc::multichan_register_iface& regs,
+    const size_t base,
+    const double tick_rate,
+    const size_t nipc);
+
+rx_complex_gain_iface::sptr make_rx_complex_gain_iface(
+    uhd::rfnoc::multichan_register_iface& regs,
+    const size_t base,
+    const double tick_rate,
+    const size_t nipc);
+
+}} // namespace uhd::features
 
 using namespace uhd::rfnoc;
 
 const std::string radio_control::ALL_LOS   = "all";
 const std::string radio_control::ALL_GAINS = "";
 
-const uint16_t radio_control_impl::MAJOR_COMPAT = 0;
-const uint16_t radio_control_impl::MINOR_COMPAT = 1;
+const uint16_t radio_control_impl::MAJOR_COMPAT = 1;
+const uint16_t radio_control_impl::MINOR_COMPAT = 0;
 
 const uhd::fs_path radio_control_impl::DB_PATH("dboard");
 const uhd::fs_path radio_control_impl::FE_PATH("frontends");
@@ -119,7 +120,9 @@ radio_control_impl::radio_control_impl(make_args_ptr make_args)
                 RFNOC_LOG_WARNING("Received stream command to invalid output port!");
                 return;
             }
-            post_action({res_source_info::OUTPUT_EDGE, port}, stream_cmd_action);
+            post_action({res_source_info::OUTPUT_EDGE, port},
+                stream_cmd_action,
+                action_mode_t::ASYNC);
         });
 
     register_action_handler(ACTION_KEY_TUNE_REQUEST,
@@ -318,13 +321,30 @@ radio_control_impl::radio_control_impl(make_args_ptr make_args)
         });
     regs().register_async_msg_handler([this](uint32_t addr,
                                           const std::vector<uint32_t>& data,
-                                          boost::optional<uint64_t> timestamp) {
+                                          std::optional<uint64_t> timestamp) {
         this->async_message_handler(addr, data, timestamp);
     });
 
     // Set the default gain profiles
     _rx_gain_profile_api = std::make_shared<rf_control::default_gain_profile>();
     _tx_gain_profile_api = std::make_shared<rf_control::default_gain_profile>();
+
+    // Create complex gain APIs, if available
+    const uint32_t feature_reg = _radio_reg_iface.peek32(regmap::REG_FEATURES_PRESENT);
+
+    double tick_rate = get_tick_rate();
+
+    if (feature_reg & regmap::FEATURE_TX_CGAIN) {
+        RFNOC_LOG_TRACE("Enabling TX complex gain feature.");
+        register_feature(uhd::features::make_tx_complex_gain_iface(
+            _radio_reg_iface, regmap::REG_TX_CGAIN_BASE, tick_rate, get_spc()));
+    }
+    if (feature_reg & regmap::FEATURE_RX_CGAIN) {
+        RFNOC_LOG_TRACE("Enabling RX complex gain feature.");
+        register_feature(uhd::features::make_rx_complex_gain_iface(
+            _radio_reg_iface, regmap::REG_RX_CGAIN_BASE, tick_rate, get_spc()));
+    }
+
 } /* ctor */
 
 /******************************************************************************
@@ -1176,7 +1196,7 @@ void radio_control_impl::_tune_request_action_handler(
 
     RFNOC_LOG_TRACE("Sending tune_request to " << src.to_string()
                                                << ", id==" << tune_request_action->id);
-    post_action(src, tune_request_action);
+    post_action(src, tune_request_action, action_mode_t::ASYNC);
 }
 
 /******************************************************************************
@@ -1228,15 +1248,9 @@ bool radio_control_impl::async_message_validator(
     return false;
 }
 
-bool printed = false; //ADDED
-FILE *oailogfile; //ADDED
-const char* oai_log_path = "/home/oai_errors_log_file.log";
-
-void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<uint32_t>& data, boost::optional<uint64_t> timestamp)
+void radio_control_impl::async_message_handler(
+    uint32_t addr, const std::vector<uint32_t>& data, std::optional<uint64_t> timestamp)
 {
-    time_t now;
-    struct tm *tm_info;
-    char time_buffer[50];
     if (data.empty()) {
         RFNOC_LOG_WARNING(
             str(boost::format("Received async message with invalid length %d!")
@@ -1265,8 +1279,7 @@ void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<
             % addr % data.size() % (addr_base == regmap::SWREG_TX_ERR ? "TX" : "RX")
             % chan % addr_offset % int(bool(timestamp))));
     if (timestamp) {
-        RFNOC_LOG_TRACE(
-            str(boost::format("Async message timestamp: %ul") % timestamp.get()));
+        RFNOC_LOG_TRACE("Async message timestamp: " << *timestamp);
     }
     switch (addr_base + addr_offset) {
         case regmap::SWREG_TX_ERR: {
@@ -1280,87 +1293,28 @@ void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<
                     auto tx_event_action = tx_event_action_info::make(
                         uhd::async_metadata_t::EVENT_CODE_UNDERFLOW, timestamp);
                     post_action(res_source_info{res_source_info::INPUT_EDGE, chan},
-                        tx_event_action);
-                    UHD_LOG_FASTPATH("U_Tx");
-                    if(printed == false){
-                        time(&now); //get current time
-                        tm_info = localtime(&now); //Convert time to local time structure
-                        strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
-                        oailogfile = fopen(oai_log_path,"a");
-                        if(oailogfile == NULL){
-                            UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
-                            printed = true;
-                            return;
-                        }
-                        fprintf(oailogfile, "Async message received (U): Time = [%s]\n", time_buffer);
-                        fclose(oailogfile);
-                        printed = true;
-                    }
+                        tx_event_action,
+                        action_mode_t::ASYNC);
+                    UHD_LOG_FASTPATH("U");
                     RFNOC_LOG_TRACE("Posting underrun event action message.");
                     break;
                 }
                 case err_codes::ERR_TX_LATE_DATA: {
-                    auto tx_event_action = tx_event_action_info::make(uhd::async_metadata_t::EVENT_CODE_TIME_ERROR, timestamp);
-                    post_action(res_source_info{res_source_info::INPUT_EDGE, chan},tx_event_action);
-                    UHD_LOG_FASTPATH("L_Tx");
-                    if(printed == false){
-                        time(&now); //get current time
-                        tm_info = localtime(&now); //Convert time to local time structure
-                        strftime(time_buffer, 50, "%Y-%m-%d %H:%M:%S", tm_info); //Format time as string
-                        oailogfile = fopen(oai_log_path,"a");
-                        if(oailogfile == NULL){
-                            UHD_LOG_FASTPATH("\e[0;36m Failed to open errors log file.\e[0m");
-                            printed = true;
-                            return;
-                        }
-                        fprintf(oailogfile, "Async message received (L): Time = [%s]\n", time_buffer);
-                        fclose(oailogfile);
-                        printed = true;
-                    }
+                    auto tx_event_action = tx_event_action_info::make(
+                        uhd::async_metadata_t::EVENT_CODE_TIME_ERROR, timestamp);
+                    post_action(res_source_info{res_source_info::INPUT_EDGE, chan},
+                        tx_event_action,
+                        action_mode_t::ASYNC);
+                    UHD_LOG_FASTPATH("L");
                     RFNOC_LOG_TRACE("Posting late data event action message.");
-                    
-                    // Socket code start
-                    // if(flag == 0){
-                    //     int status, valread, client_fd;
-                    //     struct sockaddr_in serv_addr;
-                    //     if((client_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-                    //         printf("Socket failed: %s\n", strerror(errno));
-                    //         return;
-                    //     }
-                        
-                    //     serv_addr.sin_family = AF_INET;
-                    //     serv_addr.sin_port = htons(PORT);
-
-                    //     // Convert IPv4 and IPv6 addresses from text to binary form
-                    //     if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0){
-                    //         printf("nInvalid address/ Address not supported \n");
-                    //         return;
-                    //     }
-
-                    //     if((status = connect(client_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))) < 0){
-                    //         printf("\nConnection Failed \n");
-                    //         return;
-                    //     }
-
-                    //     char *msg = "Late Packets";
-                    //     send(client_fd, msg, strlen(msg), 0);
-
-                    //     close(client_fd);
-                    //     flag = 1;
-                    //     abort();
-                    // }
-                    // if(flag == 1){
-                    //     sleep(2);
-                    // }
-                    // Socket code end
-
                     break;
                 }
                 case err_codes::EVENT_TX_BURST_ACK: {
                     auto tx_event_action = tx_event_action_info::make(
                         uhd::async_metadata_t::EVENT_CODE_BURST_ACK, timestamp);
                     post_action(res_source_info{res_source_info::INPUT_EDGE, chan},
-                        tx_event_action);
+                        tx_event_action,
+                        action_mode_t::ASYNC);
                     RFNOC_LOG_TRACE("Posting burst ack event action message.");
                     break;
                 }
@@ -1383,7 +1337,8 @@ void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<
                     rx_event_action->args["cont_mode"] = std::to_string(cont_mode);
                     RFNOC_LOG_TRACE("Posting overrun event action message.");
                     post_action(res_source_info{res_source_info::OUTPUT_EDGE, chan},
-                        rx_event_action);
+                        rx_event_action,
+                        action_mode_t::ASYNC);
                     break;
                 }
                 case err_codes::ERR_RX_LATE_CMD:
@@ -1392,7 +1347,8 @@ void radio_control_impl::async_message_handler(uint32_t addr, const std::vector<
                         uhd::rx_metadata_t::ERROR_CODE_LATE_COMMAND);
                     RFNOC_LOG_TRACE("Posting RX late command message.");
                     post_action(res_source_info{res_source_info::OUTPUT_EDGE, chan},
-                        rx_event_action);
+                        rx_event_action,
+                        action_mode_t::ASYNC);
                     break;
             }
             break;

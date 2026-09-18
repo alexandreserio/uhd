@@ -34,7 +34,7 @@ parameters:
 - name: add_tests
   displayName: Force-enable modules
   type: string
-  default: "none"
+  default: "uhd.build.all"
 - name: remove_tests
   displayName: Force-disable modules
   type: string
@@ -83,6 +83,10 @@ parameters:
   type: boolean
   displayName: Build x4xx image
   default: true
+- name: ext_fpga
+  type: boolean
+  displayName: Use pipeline FPGA build
+  default: true
   # This is the source of FPGA images only if they're not being built in this
   # pipeline. If they are being built, the source is the pipeline itself.
 - name: fpga_imgs_source
@@ -114,6 +118,14 @@ parameters:
   - 'files.ettus.com (Public)'
   displayName: Published Package Access
   default: 'Internal'
+- name: use_low_success_fpga_targets
+  type: boolean
+  displayName: Force use of FPGA with low-success compile rates
+  default: false
+- name: selected_streaming_tests
+  type: string
+  displayName: Streaming Tests Multi-Select (comma-separated)
+  default: 'B206,B210,B310,X310_XG,X410_CG_400,X410_UC_200,X440_CG_400,X440_CG_1600'
 
 trigger:
   batch: true
@@ -157,3 +169,6 @@ extends:
     publish_int_files: true
     package_and_publish_images: ${{ parameters.package_and_publish_images }}
     package_access: ${{ parameters.package_access }}
+    use_low_success_fpga_targets: ${{ parameters.use_low_success_fpga_targets }}
+    # Test parameters
+    selected_streaming_tests: ${{ parameters.selected_streaming_tests }}

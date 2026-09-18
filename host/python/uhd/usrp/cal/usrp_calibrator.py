@@ -376,6 +376,19 @@ class B200Calibrator(USRPCalibratorBase):
         self.ref_gain = 60
 
 
+class B3xxCalibrator(USRPCalibratorBase):
+    """B3xx calibrator class."""
+
+    mboard_ids = ("B310",)
+    # Choosing 3.84 MHz: It is a small rate, but carries enough bandwidth to
+    # receive a tone. It's 1/32 the default master clock rate (122.88e6), which
+    # means it'll engage max halfbands.
+    default_rate = 3.84e6
+    # B3xx non-timed tunes are currently very poke-intensive, so we give it some
+    # time to clear the command queue
+    tune_settling_time = 0.5
+
+
 class X300Calibrator(USRPCalibratorBase):
     """X300/X310 calibration class.
 
@@ -410,6 +423,23 @@ class X410Calibrator(USRPCalibratorBase):
     min_freq = 1e6
     max_freq = 8e9
     # X410 non-timed tunes are currently very poke-intensive, so we give it some
+    # time to clear the command queue
+    tune_settling_time = 0.5
+
+
+class X420Calibrator(USRPCalibratorBase):
+    """X420/HBX Calibration."""
+
+    mboard_ids = ("x420",)
+    # X420 max input level is 0 dBm and it is required for a proper cal.
+    max_input_power = 0
+    # Choosing 1250 MHz: In some bitfiles we don't have resamplers, so we need
+    # to choose the default master clock rate. The power cal utility can
+    # override this to a lower rate if needed.
+    default_rate = 1.25e9
+    min_freq = 10e6
+    max_freq = 20e9
+    # X420 non-timed tunes are currently very poke-intensive, so we give it some
     # time to clear the command queue
     tune_settling_time = 0.5
 

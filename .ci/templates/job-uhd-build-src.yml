@@ -24,6 +24,9 @@ parameters:
 - name: cmake_args
   type: string
   default: " "
+- name: grpc_version
+  type: string
+  default: "unknown"
 
 jobs:
 - job: build_ctest_and_upload_uhd_${{ parameters.toolset }}
@@ -84,6 +87,9 @@ jobs:
 
   - download: uhd_build_docker_container
 
+  - ${{ if not(or(contains(parameters.toolset, 'msbuild'), eq(parameters.toolset, 'make_homebrew_macos'))) }}:
+    - template: steps-install-nib310rio-dev.yml
+
   - ${{ if eq(parameters.toolset, 'make') }}:
     - template: steps-build-uhd-make.yml
       parameters:
@@ -103,18 +109,20 @@ jobs:
   - ${{ if eq(parameters.toolset, 'make_homebrew_macos') }}:
     - template: steps-build-uhd-make-homebrew-macos.yml
       parameters:
-        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdSrcDir: $(Build.SourcesDirectory)/uhddev
         uhdBuildDir: $(Build.BinariesDirectory)/uhddev/build
         uhdGenerateTestBinaries: true
         uhdCustomBoostPackage: ${{ parameters.custom_boost_version }}
         uhdCustomBoostPackageURL: ${{ parameters.custom_boost_version_url }}
         cmake_args: ${{ parameters.cmake_args }}
+        grpc_version: ${{ parameters.grpc_version }}
 
   - ${{ if eq(parameters.toolset, 'ninja') }}:
     - template: steps-build-uhd-ninja.yml
       parameters:
         uhdSrcDir: $(Build.SourcesDirectory)
         uhdBuildDir: $(Build.BinariesDirectory)/uhddev/build
+        cmake_args: ${{ parameters.cmake_args }}
 
   - ${{ if eq(parameters.toolset, 'msbuild') }}:
     - template: steps-build-uhd-msbuild.yml

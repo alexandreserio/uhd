@@ -20,10 +20,9 @@
 #include <uhd/types/wb_iface.hpp>
 #include <uhdlib/rfnoc/rf_control/dboard_iface.hpp>
 #include <uhdlib/usrp/common/mpmd_mb_controller.hpp>
-#include <uhdlib/usrp/common/rpc.hpp>
 #include <uhdlib/usrp/common/x400_rfdc_control.hpp>
+#include <uhdlib/usrp/common/x4xx_ch_modes.hpp>
 #include <uhdlib/usrp/dboard/x400_dboard_iface.hpp>
-#include <uhdlib/utils/rpc.hpp>
 #include <string>
 
 using namespace uhd::rfnoc;
@@ -52,7 +51,6 @@ public:
         const std::string& radio_slot,
         const size_t num_tx_chans,
         const size_t num_rx_chans,
-        const std::string& rpc_prefix,
         const std::string& unique_id,
         uhd::usrp::x400_rpc_iface::sptr mb_rpcc,
         uhd::usrp::fbx_rpc_iface::sptr rpcc,
@@ -76,28 +74,9 @@ public:
         return true;
     }
 
-    uhd::usrp::x400::adc_self_cal_params_t get_adc_self_cal_params(const double) override
+    uhd::usrp::x400::adc_self_cal_params_t get_adc_self_cal_params() override
     {
-        // FBX uses a fixed low freq for both TX and RX
         return {
-            // Some conditions were considered for choosing the correct
-            // cal_freq, mainly using the PG269 manual as reference. These
-            // conditions ensure that the cal_freq or its harmonics don't
-            // interfere with the background (BG) calibration mechanism on
-            // the RFSoC.
-            //
-            // 1. In calib_mode2 the highest supported frequency is
-            //    0.4 * converter rate (fc).
-            //    The minimum fc that X440 supports is 1GHz. So our highest
-            //    cal_freq is 400MHz.
-            // 2. We need to choose as high a cal_freq as we can
-            // 3. The converter rate (fc) should not be a multiple of the cal_freq
-            // 4. The converter rate (fc) / 8 should not be a multiple the cal_freq
-            // 5. cal_freq should not be of a form k * (fc / 1024) where k = 1 to 1024
-            // 6. The specified hysteresis threshold values work with the chosen
-            //    cal_freq
-            397.55e6, // rx_freq
-            397.55e6, // tx_freq
             {0x7FFF, 0}, // output full scale dac mux
             100, // delay
             // From PG.269: "Threshold levels are set as 14-bit unsigned values,
@@ -124,7 +103,34 @@ public:
         };
     }
 
-    bool select_adc_self_cal_gain(size_t) override;
+    uhd::usrp::x400::adc_self_cal_freqs_t get_adc_self_cal_freqs(
+        uhd::usrp::x400::ch_mode) override
+    {
+        // Some conditions were considered for choosing the correct
+        // cal_freq, mainly using the PG269 manual as reference. These
+        // conditions ensure that the cal_freq or its harmonics don't
+        // interfere with the background (BG) calibration mechanism on
+        // the RFSoC.
+        //
+        // 1. In calib_mode2 the highest supported frequency is
+        //    0.4 * converter rate (fc).
+        //    The minimum fc that X440 supports is 1GHz. So our highest
+        //    cal_freq is 400MHz.
+        // 2. We need to choose as high a cal_freq as we can
+        // 3. The converter rate (fc) should not be a multiple of the cal_freq
+        // 4. The converter rate (fc) / 8 should not be a multiple the cal_freq
+        // 5. cal_freq should not be of a form k * (fc / 1024) where k = 1 to 1024
+        // 6. The specified hysteresis threshold values work with the chosen
+        //    cal_freq
+        return {397.55e6, 397.55e6, uhd::usrp::x400::custom_freq_t::ALLOW};
+    }
+
+    bool select_adc_self_cal_gain(size_t, size_t) override;
+
+    std::vector<ch_mode> get_ch_modes() const override
+    {
+        return {FBX_CH_MODE};
+    }
 
     double get_converter_rate() const override
     {
@@ -439,9 +445,6 @@ private:
     // infos about the daughtherboard
     std::vector<std::map<std::string, std::string>> _all_dboard_info;
 
-    //! Prepended for all dboard RPC calls
-    const std::string _rpc_prefix;
-
     //! Reference to the MB controller
     uhd::rfnoc::mpmd_mb_controller::sptr _mb_control;
 
@@ -458,10 +461,11 @@ private:
     //! Reference to FBX CTRL
     std::shared_ptr<fbx_ctrl> _fbx_ctrl;
 
-    //! Reference to this block's subtree
-    //
-    // It is mutable because _tree->access<>(..).get() is not const, but we
-    // need to do just that in some const contexts
+    /*! \brief Reference to this block's subtree.
+     *
+     * It is mutable because _tree->access<>(..).get() is not const, but we
+     * need to do just that in some const contexts
+     */
     mutable uhd::property_tree::sptr _tree;
 
     rf_control::gain_profile_iface::sptr _tx_gain_profile_api;

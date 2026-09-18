@@ -4,9 +4,8 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-"""
-Container for the list of image package targets, and the information about them
-"""
+"""Container for the list of image package targets, and the information about them."""
+
 PACKAGE_MAPPING = {
     "e310_sg1": {
         "type": "e3xx",
@@ -106,10 +105,51 @@ PACKAGE_MAPPING = {
             "usrp_x410_fpga_CG_400.rpt",
         ],
     },
+    "x420": {
+        "type": "x4xx",
+        "package_name": "x4xx_x420_fpga_default-g{}.zip",
+        "files": [
+            "usrp_x420_fpga_CG_1000.bit",
+            "usrp_x420_fpga_CG_1000.bit.md5",
+            "usrp_x420_fpga_CG_1000.dts",
+            "usrp_x420_fpga_CG_1000.dts.md5",
+            "usrp_x420_fpga_CG_1000.rpt",
+            "usrp_x420_fpga_X4_1000.bit",
+            "usrp_x420_fpga_X4_1000.bit.md5",
+            "usrp_x420_fpga_X4_1000.dts",
+            "usrp_x420_fpga_X4_1000.dts.md5",
+            "usrp_x420_fpga_X4_1000.rpt",
+            "usrp_x420_fpga_CG_400.bit",
+            "usrp_x420_fpga_CG_400.bit.md5",
+            "usrp_x420_fpga_CG_400.dts",
+            "usrp_x420_fpga_CG_400.dts.md5",
+            "usrp_x420_fpga_CG_400.rpt",
+            "usrp_x420_fpga_X4_400.bit",
+            "usrp_x420_fpga_X4_400.bit.md5",
+            "usrp_x420_fpga_X4_400.dts",
+            "usrp_x420_fpga_X4_400.dts.md5",
+            "usrp_x420_fpga_X4_400.rpt",
+            "usrp_x420_fpga_X4_200.bit",
+            "usrp_x420_fpga_X4_200.bit.md5",
+            "usrp_x420_fpga_X4_200.dts",
+            "usrp_x420_fpga_X4_200.dts.md5",
+            "usrp_x420_fpga_X4_200.rpt",
+        ],
+    },
     "x440": {
         "type": "x4xx",
         "package_name": "x4xx_x440_fpga_default-g{}.zip",
         "files": [
+            "usrp_x440_fpga_CG_800.bit",
+            "usrp_x440_fpga_CG_800.bit.md5",
+            "usrp_x440_fpga_CG_800.dts",
+            "usrp_x440_fpga_CG_800.dts.md5",
+            "usrp_x440_fpga_CG_800.rpt",
+            "usrp_x440_fpga_X4_800.bit",
+            "usrp_x440_fpga_X4_800.bit.md5",
+            "usrp_x440_fpga_X4_800.dts",
+            "usrp_x440_fpga_X4_800.dts.md5",
+            "usrp_x440_fpga_X4_800.rpt",
             "usrp_x440_fpga_CG_400.bit",
             "usrp_x440_fpga_CG_400.bit.md5",
             "usrp_x440_fpga_CG_400.dts",
@@ -316,6 +356,16 @@ PACKAGE_MAPPING = {
         "type": "usrp2",
         "package_name": "usrp2_usrp2_fw_default-g{}.zip",
         "files": ["usrp2_fw.bin"],
+    },
+    "b310": {
+        "type": "b3xx",
+        "package_name": "b3xx_b310_fpga_default-g{}.zip",
+        "files": [
+            "usrp_b310_fpga_replay.bit",
+            "usrp_b310_fpga_replay.rpt",
+            "usrp_b310_fpga_fifo.bit",
+            "usrp_b310_fpga_fifo.rpt",
+        ],
     },
     "b200": {
         "type": "b2xx",

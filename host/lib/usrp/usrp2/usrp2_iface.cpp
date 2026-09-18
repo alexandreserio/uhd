@@ -11,6 +11,7 @@
 #include "usrp2_regs.hpp"
 #include <uhd/exception.hpp>
 #include <uhd/types/dict.hpp>
+#include <uhd/utils/cast.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhd/utils/paths.hpp>
 #include <uhd/utils/platform.hpp>
@@ -18,12 +19,12 @@
 #include <uhd/utils/tasks.hpp>
 #include <uhdlib/asio.hpp> //used for htonl and ntohl
 #include <uhdlib/utils/paths.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/tokenizer.hpp>
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -32,7 +33,7 @@
 using namespace uhd;
 using namespace uhd::usrp;
 using namespace uhd::transport;
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 static const double CTRL_RECV_TIMEOUT = 1.0;
 static const size_t CTRL_RECV_RETRIES = 3;
@@ -330,7 +331,7 @@ public:
         std::string hw = mb_eeprom["hardware"];
         if (hw.empty())
             return USRP_NXXX;
-        switch (boost::lexical_cast<uint16_t>(hw)) {
+        switch (uhd::cast::from_str<uint16_t>(hw)) {
             case 0x0300:
             case 0x0301:
                 return USRP2_REV3;

@@ -9,21 +9,21 @@
 #include <uhd/exception.hpp>
 #include <uhd/transport/usb_control.hpp>
 #include <uhd/transport/usb_device_handle.hpp>
+#include <uhd/utils/cast.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhd/utils/paths.hpp>
 #include <uhd/utils/scope_exit.hpp>
 #include <b200_iface.hpp>
 #include <libusb.h>
 #include <stdint.h>
-#include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/functional/hash.hpp>
-#include <boost/lexical_cast.hpp>
 #include <boost/program_options.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -32,7 +32,7 @@
 #include <thread>
 
 namespace po = boost::program_options;
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 namespace {
 struct vid_pid_t
@@ -110,7 +110,7 @@ uint16_t atoh(const std::string& string)
         interpreter >> hh;
         return hh.value;
     }
-    return boost::lexical_cast<uint16_t>(string);
+    return uhd::cast::from_str<uint16_t>(string);
 }
 
 int reset_usb()
@@ -344,13 +344,13 @@ uhd::byte_vector_t dump_eeprom(
     }
 }
 
+/*! \brief Erases any section of the EEPROM by overwriting with 0xFF.
+ *
+ * This can be used to erase/blank the entire EEPROM, or any sectors of it.
+ * Cf. erase_eeprom(), which only erases selected areas of the EEPROM.
+ */
 int blank_eeprom(b200_iface::sptr& b200, uint16_t addr, uint16_t offset, size_t num_bytes)
 {
-    //! Erases any section of the EEPROM by overwriting with 0xFF
-    //
-    // This can be used to erase/blank the entire EEPROM, or any sectors of it.
-    // Cf. erase_eeprom(), which only erases selected areas of the EEPROM.
-
     // copied from erase_eeprom(b200_iface::sptr& b200), but using variable size/length
     const uint16_t eeprom_addr = offset | (uint16_t(addr) << 8);
     uhd::byte_vector_t bytes(num_bytes, 0xFF);

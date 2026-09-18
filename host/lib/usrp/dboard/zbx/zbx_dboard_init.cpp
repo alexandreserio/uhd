@@ -350,7 +350,6 @@ void zbx_dboard_impl::_init_experts(uhd::property_tree::sptr subtree,
                 fe_path,
                 trx,
                 chan_idx,
-                _rpc_prefix,
                 _db_idx,
                 _mb_rpcc);
         } else {
@@ -629,7 +628,8 @@ void zbx_dboard_impl::_init_lo_prop_tree(uhd::property_tree::sptr subtree,
     // The NCO gets a sub-node called 'reset'. It is read/write: Write will
     // perform a reset, and read will return the reset status. The latter is
     // also returned in the 'locked' sensor for the NCO, but the 'nco_locked'
-    // sensor node is read-only, and returns a sensor_value_t (not a bool).
+    // sensor node is read-only, and returns a sensor_value_t (not a bool), and
+    // it also includes the sync-fail flag (which this node does not).
     // This node is primarily used for debugging, but can also serve as a manual
     // reset line for the NCOs.
     const auto nco = (trx == TX_DIRECTION)
@@ -648,7 +648,9 @@ void zbx_dboard_impl::_init_lo_prop_tree(uhd::property_tree::sptr subtree,
         subtree,
         fe_path / "los" / RFDC_NCO / "freq" / "value",
         // Initialize with current value
-        _mb_rpcc->rfdc_get_nco_freq(trx == TX_DIRECTION ? "tx" : "rx", _db_idx, chan_idx),
+        _mb_rpcc->get_dboard(_db_idx).rfdc_get_nco_freq(trx == TX_DIRECTION ? "tx" : "rx",
+            chan_idx,
+            static_cast<size_t>(ZBX_CH_MODE)),
         AUTO_RESOLVE_ON_WRITE);
 
     expert_factory::add_prop_node<zbx_lo_source_t>(expert,
@@ -677,7 +679,7 @@ void zbx_dboard_impl::_init_lo_prop_tree(uhd::property_tree::sptr subtree,
         })
         .set_publisher([this]() {
             return sensor_value_t(
-                RFDC_NCO, this->_rfdcc->get_nco_reset_done(), "locked", "unlocked");
+                RFDC_NCO, this->_rfdcc->get_nco_good(), "locked", "unlocked");
         });
 }
 }}} // namespace uhd::usrp::zbx

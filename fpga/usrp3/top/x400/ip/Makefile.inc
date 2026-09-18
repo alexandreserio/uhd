@@ -17,8 +17,6 @@ include $(IP_DIR)/axi_inter_4x128_512_bd/Makefile.inc
 include $(IP_DIR)/axi_inter_1x512_512_bd/Makefile.inc
 include $(IP_DIR)/axi_inter_2x512_512_bd/Makefile.inc
 include $(IP_DIR)/axi64_4k_2clk_fifo/Makefile.inc
-include $(IP_DIR)/fifo_short_2clk/Makefile.inc
-include $(IP_DIR)/fifo_4k_2clk/Makefile.inc
 include $(IP_DIR)/eth_100g_bd/Makefile.inc
 include $(IP_DIR)/axi_eth_dma_bd/Makefile.inc
 include $(IP_DIR)/hb47_1to2/Makefile.inc
@@ -33,11 +31,20 @@ include $(IP_DIR)/dac_400m_bd/Makefile.inc
 include $(IP_DIR)/x4xx_ps_rfdc_bd/x410_ps_rfdc_bd/Makefile.inc
 endif
 
+ifdef X420
+include $(IP_DIR)/ddr4_64bits/Makefile.inc
+include $(IP_DIR)/x4xx_ps_rfdc_bd/x420_ps_rfdc_bd/Makefile.inc
+include $(IP_DIR)/fir_dec3_4spc/Makefile.inc
+include $(IP_DIR)/fir_inp3_2spc/Makefile.inc
+endif
+
 ifdef X440
 include $(IP_DIR)/adc_100m_bd/Makefile.inc
 include $(IP_DIR)/dac_100m_bd/Makefile.inc
 include $(IP_DIR)/ddr4_64bits_x440/Makefile.inc
 include $(IP_DIR)/x4xx_ps_rfdc_bd/x440_ps_rfdc_bd/Makefile.inc
+include $(IP_DIR)/fir_dec3_2spc/Makefile.inc
+include $(IP_DIR)/fir_inp3_1spc/Makefile.inc
 endif
 
 BD_SRCS = \
@@ -75,7 +82,6 @@ endif
 
 ifdef X440
 BD_SRCS += \
-$(IP_ADC_FULL_HDL_SRCS)  \
 $(IP_ADC_100M_BD_SRCS)   \
 $(IP_ADC_100M_HDL_SRCS)  \
 $(IP_DAC_100M_BD_SRCS)   \
@@ -85,8 +91,6 @@ endif
 IP_XCI_SRCS = \
 $(IP_XGE_PCS_PMA_SRCS) \
 $(IP_AXI64_4K_2CLK_FIFO_SRCS) \
-$(IP_FIFO_SHORT_2CLK_SRCS) \
-$(IP_FIFO_4K_2CLK_SRCS) \
 $(IP_HB47_1TO2_SRCS) \
 $(IP_HB47_2TO1_SRCS) \
 
@@ -95,9 +99,18 @@ IP_XCI_SRCS += \
 $(IP_DDR4_64BITS_SRCS)
 endif
 
+ifdef X420
+IP_XCI_SRCS += \
+$(IP_DDR4_64BITS_SRCS) \
+$(IP_FIR_DEC3_4SPC_SRCS) \
+$(IP_FIR_INP3_2SPC_SRCS)
+endif
+
 ifdef X440
 IP_XCI_SRCS += \
-$(IP_DDR4_64BITS_X440_SRCS)
+$(IP_DDR4_64BITS_X440_SRCS) \
+$(IP_FIR_DEC3_2SPC_SRCS) \
+$(IP_FIR_INP3_1SPC_SRCS)
 endif
 
 BD_OUTPUTS = \
@@ -133,12 +146,15 @@ endif
 IP_SYNTH_OUTPUTS = \
 $(IP_XGE_PCS_PMA_OUTS) \
 $(IP_AXI64_4K_2CLK_FIFO_OUTS) \
-$(IP_FIFO_SHORT_2CLK_OUTS) \
-$(IP_FIFO_4K_2CLK_OUTS) \
 $(IP_HB47_1TO2_OUTS) \
 $(IP_HB47_2TO1_OUTS) \
 
 ifdef X410
+IP_SYNTH_OUTPUTS += \
+$(IP_DDR4_64BITS_OUTS)
+endif
+
+ifdef X420
 IP_SYNTH_OUTPUTS += \
 $(IP_DDR4_64BITS_OUTS)
 endif
@@ -150,8 +166,6 @@ endif
 
 IP_HDL_SIM_SRCS = \
 $(IP_AXI64_4K_2CLK_FIFO_HDL_SIM_SRCS) \
-$(IP_FIFO_4K_2CLK_HDL_SIM_SRCS) \
-$(IP_FIFO_SHORT_2CLK_HDL_SIM_SRCS) \
 $(IP_AXI_INTERCONNECT_ETH_HDL_SIM_SRCS) \
 $(IP_AXI_INTERCONNECT_DMA_HDL_SIM_SRCS) \
 $(IP_100G_HDL_SIM_SRCS) \

@@ -156,15 +156,16 @@ module chdr_to_axis_ctrl #(
   wire [CHDR_W-1:0] ch2ct_new_ctrl_hdr;
   assign ch2ct_new_ctrl_hdr[63:0] = {
     axis_ctrl_build_hdr_hi(
-      axis_ctrl_get_src_port(ch2ct_tdata[31:0]),
-      axis_ctrl_get_rem_dst_epid(ch2ct_tdata[63:32])
+      axis_ctrl_get_req_size(ch2ct_tdata[63:32]),
+      axis_ctrl_get_seq_num(ch2ct_tdata[63:32]),
+      axis_ctrl_get_src_port(ch2ct_tdata[63:32]),
+      THIS_PORTID
     ),
     axis_ctrl_build_hdr_lo(
-      axis_ctrl_get_is_ack  (ch2ct_tdata[31:0]),
+      axis_ctrl_get_rem_dst_epid(ch2ct_tdata[31:0]),
+      axis_ctrl_get_is_ack(ch2ct_tdata[31:0]),
       axis_ctrl_get_has_time(ch2ct_tdata[31:0]),
-      axis_ctrl_get_seq_num (ch2ct_tdata[31:0]),
       axis_ctrl_get_num_data(ch2ct_tdata[31:0]),
-      THIS_PORTID,
       axis_ctrl_get_dst_port(ch2ct_tdata[31:0])
     )
   };
@@ -263,7 +264,7 @@ module chdr_to_axis_ctrl #(
   // Hold the first line to generate info for the outgoing CHDR header
   assign ct2ch_wctrl_tready = (ct2ch_state == ST_CTRL_HDR || ct2ch_state == ST_CTRL_BODY) ? ct2ch_tready : 1'b0;
 
-  wire [7:0] ct2ch_num_data = {4'h0, axis_ctrl_get_num_data(ct2ch_wctrl_tdata[31:0])};
+  wire [3:0] ct2ch_num_data = axis_ctrl_get_num_data(ct2ch_wctrl_tdata[31:0]);
   wire [7:0] ct2ch_timestamp = axis_ctrl_get_has_time(ct2ch_wctrl_tdata[31:0]) ? 8'd2 : 8'd0;
   wire [7:0] ct2ch_32bit_lines = CHDR_W/32 +         // CHDR header
                                  8'd3 +              // CTL Header + OpWord
@@ -282,18 +283,18 @@ module chdr_to_axis_ctrl #(
            CHDR_NO_MDATA,
            ct2ch_seqnum,
            (ct2ch_32bit_lines << $clog2(32/8)), /* length in bytes */
-           axis_ctrl_get_rem_dst_epid(ct2ch_wctrl_tdata[63:32]));
+           axis_ctrl_get_rem_dst_epid(ct2ch_wctrl_tdata[31:0]));
     ct2ch_ctrl_hdr = {
-           axis_ctrl_build_hdr_hi(
-             10'd0,        /* Unused in CHDR Control payload */
-             this_epid     /* This is the SrcEPID */
+           chdr_ctrl_build_hdr_hi(
+             axis_ctrl_get_req_size(ct2ch_wctrl_tdata[63:32]),
+             axis_ctrl_get_seq_num (ct2ch_wctrl_tdata[63:32]),
+             axis_ctrl_get_src_port(ct2ch_wctrl_tdata[63:32])
            ),
-           axis_ctrl_build_hdr_lo(
+           chdr_ctrl_build_hdr_lo(
+             this_epid,    /* This is the SrcEPID */
              axis_ctrl_get_is_ack  (ct2ch_wctrl_tdata[31:0]),
              axis_ctrl_get_has_time(ct2ch_wctrl_tdata[31:0]),
-             axis_ctrl_get_seq_num (ct2ch_wctrl_tdata[31:0]),
              axis_ctrl_get_num_data(ct2ch_wctrl_tdata[31:0]),
-             axis_ctrl_get_src_port(ct2ch_wctrl_tdata[31:0]),
              axis_ctrl_get_rem_dst_port(ct2ch_wctrl_tdata[63:32])
            )
          };

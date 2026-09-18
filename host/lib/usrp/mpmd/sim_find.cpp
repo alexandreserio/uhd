@@ -4,13 +4,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 
+// Python.h must be included before any system header that pulls in features.h,
+// otherwise Python 3.14+ pyconfig.h will attempt to redefine _POSIX_C_SOURCE
+// and _XOPEN_SOURCE after glibc has already set them to newer values.
+// Need this import because pybind11 doesn't have an equivalent to Py_IsInitialized()
+#include <Python.h>
+
 #include "mpmd_devices.hpp"
 #include "mpmd_impl.hpp"
 #include <uhd/device.hpp>
 #include <uhd/utils/static.hpp>
 #include <uhdlib/rfnoc/rfnoc_device.hpp>
-// Need this import because pybind doesn't have an equivalent to Py_IsInitialized()
-#include <Python.h>
+#include <uhdlib/utils/device_filter.hpp>
 #include <pybind11/embed.h>
 #include <pybind11/pybind11.h>
 #include <chrono>
@@ -106,7 +111,7 @@ device_addrs_t sim_find(const device_addr_t& hint_)
         // So discovery doesn't complain about hint mismatch
         simulators.back()["type"] = MPM_CATCHALL_DEVICE_TYPE;
     }
-    return simulators;
+    return device_filter::filter_device_addrs(simulators, hint_);
 }
 
 /*! Ensure that the simulator is loaded by pinging the discovery port until it responds or

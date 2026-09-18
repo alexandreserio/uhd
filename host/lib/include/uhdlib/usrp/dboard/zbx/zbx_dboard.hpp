@@ -25,16 +25,16 @@
 #include <uhdlib/rfnoc/rf_control/dboard_iface.hpp>
 #include <uhdlib/usrp/common/mpmd_mb_controller.hpp>
 #include <uhdlib/usrp/common/pwr_cal_mgr.hpp>
-#include <uhdlib/usrp/common/rpc.hpp>
 #include <uhdlib/usrp/common/x400_rfdc_control.hpp>
+#include <uhdlib/usrp/common/x4xx_ch_modes.hpp>
 #include <uhdlib/usrp/dboard/x400_dboard_iface.hpp>
-#include <uhdlib/utils/rpc.hpp>
 #include <stddef.h>
 #include <memory>
 #include <string>
 #include <vector>
 
 using namespace uhd::rfnoc;
+using uhd::usrp::x400::ch_mode;
 
 namespace uhd { namespace usrp { namespace zbx {
 
@@ -58,7 +58,6 @@ public:
         time_accessor_fn_type&& time_accessor,
         const size_t db_idx,
         const std::string& radio_slot,
-        const std::string& rpc_prefix,
         const std::string& unique_id,
         uhd::usrp::x400_rpc_iface::sptr mb_rpcc,
         uhd::usrp::zbx_rpc_iface::sptr rpcc,
@@ -87,19 +86,9 @@ public:
         return true;
     }
 
-    uhd::usrp::x400::adc_self_cal_params_t get_adc_self_cal_params(
-        const double tone_freq) final
+    uhd::usrp::x400::adc_self_cal_params_t get_adc_self_cal_params() final
     {
-        // This is chosen such that the IF2 frequency is 1.06G
-        const double rx_freq  = 4.7e9 - 5.12e6;
-        const double if2_freq = 1.06e9;
-        const double offset   = tone_freq - if2_freq;
-
-        // Minus because this zone is inverted
-        const double tx_freq = rx_freq - offset;
         return {
-            rx_freq, // rx_freq
-            tx_freq, // tx_freq
             {32768 / 2, 0}, // Configure the output DAC mux to output
                             // 1/2 full scale dac data (only I, no Q)
             100, // delay
@@ -111,7 +100,35 @@ public:
         };
     }
 
-    bool select_adc_self_cal_gain(size_t chan) final;
+    uhd::usrp::x400::adc_self_cal_freqs_t get_adc_self_cal_freqs(
+        uhd::usrp::x400::ch_mode) final
+    {
+        // The frequency that we need to feed into the ADC is, by decree,
+        // 13109 / 32768 times the ADC sample rate for X410. (approx. 1.2GHz
+        // for a 3Gsps rate) This is at 0.4 * Fs, right on the boundary
+        // between modes 1 and 2 for the ADC self-cal.
+        const double tone_freq = get_converter_rate() * 13109.0 / 32768.0;
+
+        // This is chosen such that the IF2 frequency is 1.06G
+        const double rx_freq  = 4.7e9 - 5.12e6;
+        const double if2_freq = 1.06e9;
+        const double offset   = tone_freq - if2_freq;
+
+        // Minus because this zone is inverted
+        const double tx_freq = rx_freq - offset;
+        return {
+            rx_freq, // rx_freq
+            tx_freq, // tx_freq
+            uhd::usrp::x400::custom_freq_t::DISALLOW,
+        };
+    }
+
+    bool select_adc_self_cal_gain(size_t chan, size_t mode) final;
+
+    std::vector<ch_mode> get_ch_modes() const override
+    {
+        return {ZBX_CH_MODE};
+    }
 
     rf_control::gain_profile_iface::sptr get_tx_gain_profile_api() final
     {
@@ -363,9 +380,6 @@ private:
     // infos about the daughtherboard
     std::vector<std::map<std::string, std::string>> _all_dboard_info;
 
-    //! Prepended for all dboard RPC calls
-    const std::string _rpc_prefix;
-
     //! Reference to the MB controller
     uhd::rfnoc::mpmd_mb_controller::sptr _mb_control;
 
@@ -391,10 +405,11 @@ private:
     //! Reference to the RX Cal data
     std::shared_ptr<uhd::usrp::cal::zbx_rx_dsa_cal> _rx_dsa_cal;
 
-    //! Reference to this block's subtree
-    //
-    // It is mutable because _tree->access<>(..).get() is not const, but we
-    // need to do just that in some const contexts
+    /*! \brief Reference to this block's subtree.
+     *
+     * It is mutable because _tree->access<>(..).get() is not const, but we
+     * need to do just that in some const contexts
+     */
     mutable uhd::property_tree::sptr _tree;
 
     std::vector<uhd::usrp::pwr_cal_mgr::sptr> _rx_pwr_mgr;

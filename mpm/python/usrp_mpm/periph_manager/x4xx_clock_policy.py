@@ -13,7 +13,6 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from usrp_mpm.chips import LMK04832
-from usrp_mpm.dboard_manager import FBX, ZBX
 from usrp_mpm.mpmutils import parse_multi_device_arg
 from usrp_mpm.periph_manager.x4xx_clock_lookup import MCR_LMK_VCO, RFDC_PLL_CONFIGS
 from usrp_mpm.periph_manager.x4xx_clock_types import Spll1Vco
@@ -381,6 +380,7 @@ class X440ClockPolicy(X4xxClockPolicy):
     bandwidth_to_default_mcr = {
         200: 245.76e6,
         400: 368.64e6,
+        800: 368.64e6,
         1600: 368.64e6,
     }
 
@@ -465,7 +465,7 @@ class X440ClockPolicy(X4xxClockPolicy):
     def _read_converter_rates(self):
         """Gets the converter rate.
 
-        Gets the converter rate  from the argument string, if it is given there,
+        Gets the converter rate from the argument string, if it is given there,
         None otherwise.
         """
         self.conv_rates = self.args.get("converter_rate")
@@ -546,14 +546,14 @@ class X440ClockPolicy(X4xxClockPolicy):
         # Calculate desired converter rate: If a converter rate was passed, check if
         # we can decimate from converter rate to master clock rate and if this converter rate
         # is within the valid range. If this is impossible, pick the converter rate automatically.
-        div = desired_conv_rate / desired_mcr
-        coerced_mcr = desired_mcr
+        coerced_mcr = desired_mcr * self._extra_resampling
+        div = desired_conv_rate / coerced_mcr
         if (
             div not in X4xxRfdcCtrl.RFDC_RESAMPLER
             or not X4xxRfdcCtrl.CONV_RATE_MIN <= desired_conv_rate <= X4xxRfdcCtrl.CONV_RATE_MAX
-            or desired_mcr not in MCR_LMK_VCO
+            or coerced_mcr not in MCR_LMK_VCO
         ):
-            coerced_mcr = min(sorted(MCR_LMK_VCO), key=lambda x: abs(x - desired_mcr))
+            coerced_mcr = min(sorted(MCR_LMK_VCO), key=lambda x: abs(x - coerced_mcr))
             for div in sorted(X4xxRfdcCtrl.RFDC_RESAMPLER, reverse=True):
                 if coerced_mcr * div <= X4xxRfdcCtrl.CONV_RATE_MAX:
                     break
@@ -683,6 +683,14 @@ class X440ClockPolicy(X4xxClockPolicy):
         if len(master_clock_rates) < self.get_num_rates():
             master_clock_rates = [master_clock_rates[0]] * self.get_num_rates()
 
+        # In case resamplers are present there is only 1 MCR allowed
+        if len(master_clock_rates) > 1 and self._extra_resampling > 1:
+            if master_clock_rates[0] != master_clock_rates[1]:
+                raise ValueError(
+                    f"{type(self).__name__.replace('ClockPolicy', '')} with resamplers only "
+                    "supports identical master clock rates on both DBs."
+                )
+
         # Check if MCR meets BW
         for mcr in master_clock_rates:
             if not self._get_min_mcr() <= mcr <= self._get_max_mcr():
@@ -696,6 +704,8 @@ class X440ClockPolicy(X4xxClockPolicy):
         conv_rates = []
         for idx, mcr in enumerate(master_clock_rates):
             conv_rate = 0 if self.conv_rates is None else self.conv_rates[idx]
+            # If extra_resampling is >1, then from this place on, mcr will be
+            # the MCR multiplied by the extra resampling factor in the PL.
             mcr, cvr = self._match_mcrs(mcr, conv_rate)
             mcrs.append(mcr)
             conv_rates.append(cvr)
@@ -708,7 +718,7 @@ class X440ClockPolicy(X4xxClockPolicy):
             conv_rates[1] = conv_rates[0]
 
         # With these values check if we can do this in MMCM
-        rfdc_rate = list(map(lambda x: int(x / (self._spc * self._extra_resampling)), mcrs))
+        rfdc_rate = [int(x / self._spc) for x in mcrs]
         min_mmcm_vco_rate = lcm(rfdc_rate[0], rfdc_rate[1])
         # Inform user if we don't have an exact match
         if min_mmcm_vco_rate > X4xxRfdcCtrl.MMCM_VCO_MAX:
@@ -716,10 +726,11 @@ class X440ClockPolicy(X4xxClockPolicy):
             # Ensure we're falling back to converter rate 0, too
             conv_rates[1] = conv_rates[0]
 
-        if mcrs != master_clock_rates:
+        if mcrs != [mcr * self._extra_resampling for mcr in master_clock_rates]:
             self.log.warning(
                 f"Unable to use desired master clock rate(s), using "
-                f"{mcrs[0]/1e6} MHz for DB0 and {mcrs[1]/1e6} MHz for DB1."
+                f"{mcrs[0]/self._extra_resampling/1e6} MHz for DB0 and "
+                f"{mcrs[1]/self._extra_resampling/1e6} MHz for DB1."
             )
         if self.conv_rates is not None and self.conv_rates != conv_rates:
             self.log.warning(
@@ -727,16 +738,18 @@ class X440ClockPolicy(X4xxClockPolicy):
                 f"{conv_rates[0]/1e6} MSps for DB0 "
                 f"and {conv_rates[1]/1e6} MSps for DB1. Converter rate needs "
                 f"to be a {X4xxRfdcCtrl.RFDC_RESAMPLER} multiple of the master "
-                f"clock rates {mcrs[0]/1e6} MHz and {mcrs[1]/1e6} MHz "
+                f"clock rates {mcrs[0]/self._extra_resampling/1e6} MHz and "
+                f"{mcrs[1]/self._extra_resampling/1e6} MHz multiplied by the "
+                f"extra resampling factor {self._extra_resampling}, "
                 f"but additional clock constraints may limit this."
             )
         self.conv_rates = conv_rates
-        return mcrs
+        return [mcr / self._extra_resampling for mcr in mcrs]
 
     def get_config(self, ref_clock_freq, master_clock_rates):
         """Returns a valid configuration based on the master clock rate.
 
-        It uses the configuration where the RFDC_CLOCK/SPC is the closest to the MCR
+        It uses the configuration where the RFDC_CLOCK/SPC is the closest to the MCR.
         This method is called after coerce_mcr() has run and - if necessary -
         rounded the MCR values, so will skip the checks here to save some time.
         """
@@ -748,6 +761,8 @@ class X440ClockPolicy(X4xxClockPolicy):
         conv_rates = []
         for idx, mcr in enumerate(master_clock_rates):
             conv_rate = 0 if self.conv_rates is None else self.conv_rates[idx]
+            # If extra_resampling is >1, then from this place on, mcr will be
+            # the MCR multiplied by the extra resampling factor in the PL.
             mcr, cvr = self._match_mcrs(mcr, conv_rate)
             mcrs.append(mcr)
             conv_rates.append(cvr)
@@ -791,7 +806,7 @@ class X440ClockPolicy(X4xxClockPolicy):
             conv_rate % sysref_config["SYSREF_FREQ"] == 0.0 for conv_rate in conv_rates
         ), "Converter Rate is not a multiple of the SysRef freq"
 
-        rfdc_rate = list(map(lambda x: int(x / (self._spc * self._extra_resampling)), mcrs))
+        rfdc_rate = list(map(lambda x: int(x / self._spc), mcrs))
         mmcm_input, mmcm_vco_rate = self._get_mmcm_rates(
             rfdc_rate, lmk_vco, sysref_config["SYSREF_FREQ"]
         )
@@ -800,7 +815,8 @@ class X440ClockPolicy(X4xxClockPolicy):
         if not mmcm_input or mmcm_input > lmk_vco:
             error_msg = (
                 f"Unable to find a valid MMCM configuration for Master Clock Rate(s) "
-                f"{mcrs[0]/1e6} MHz and {mcrs[1]/1e6} MHz. Please choose different "
+                f"{mcrs[0]/self._extra_resampling/1e6} MHz and "
+                f"{mcrs[1]/self._extra_resampling/1e6} MHz. Please choose different "
                 f"Master Clock Rate(s)."
             )
             self.log.error(error_msg)
@@ -858,6 +874,8 @@ class X440ClockPolicy(X4xxClockPolicy):
                 "r0_clk_2x": r0_clk2x,
                 "r1_clk_2x": r1_clk2x,
                 "prc": prc_out_div,
+                "data_clk": r0_clk * self._extra_resampling,
+                "data_clk_2x": r0_clk2x * self._extra_resampling,
             },
             "rfdc_configs": [RfdcConfig(**rfdc_cfg0), RfdcConfig(**rfdc_cfg1)],
             "spll_config": SpllConfig(**spll_cfg),
@@ -870,10 +888,36 @@ class X440ClockPolicy(X4xxClockPolicy):
         return True
 
 
+class X420ClockPolicy(X440ClockPolicy):
+    """This is the clocking policy for X420."""
+
+    # Lookup table for setting up the correct master clock rate
+    # depending on the DSP bandwidth (in MHz) of the FPGA image.
+    bandwidth_to_default_mcr = {
+        200: 250e6,
+        400: 491.52e6,
+        1000: 1250e6,
+    }
+
+    def get_config(self, ref_clock_freq, master_clock_rates):
+        """X420 modification of the X440 method.
+
+        Since X440 had passive daughterboards, we didn't want the PRC to be
+        routed to the them. In X420 this is different again, but we want to
+        leverage everything else of the X440 clock policy. So we just set
+        the prc_to_db flag to True.
+        """
+        cfg = super().get_config(ref_clock_freq, master_clock_rates)
+        cfg.spll_config.prc_to_db = True
+        return cfg
+
+
 def get_clock_policy(mboard_info, dboard_infos, args, log):
     """Return a clocking policy object based on the available hardware."""
-    if dboard_infos[0]["pid"] in ZBX.pids:
+    if mboard_info["product"] == "x410":
         return X410ClockPolicy(mboard_info, dboard_infos, args, log)
-    if dboard_infos[0]["pid"] in FBX.pids:
+    if mboard_info["product"] == "x440":
         return X440ClockPolicy(mboard_info, dboard_infos, args, log)
+    if mboard_info["product"] == "x420":
+        return X420ClockPolicy(mboard_info, dboard_infos, args, log)
     raise RuntimeError("Could not resolve clock policy.")

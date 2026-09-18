@@ -9,9 +9,6 @@
 #include <uhd/types/sensors.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhdlib/rfnoc/reg_iface_adapter.hpp>
-#include <boost/algorithm/string.hpp>
-#include <boost/algorithm/string/case_conv.hpp>
-#include <boost/algorithm/string/split.hpp>
 #include <string>
 #include <vector>
 
@@ -32,16 +29,16 @@ void e3xx_radio_control_impl::_init_defaults()
     // in arguments from the device args. So if block_args contains a
     // master_clock_rate key, then it should better be whatever the device is
     // configured to do.
-    auto block_args = get_block_args();
-    _master_clock_rate =
-        _rpcc->request_with_token<double>(_rpc_prefix + "get_master_clock_rate");
+    auto block_args    = get_block_args();
+    _master_clock_rate = db_rpc().get_master_clock_rate();
     const double block_args_mcr =
         block_args.cast<double>("master_clock_rate", _master_clock_rate);
     if (block_args_mcr != _master_clock_rate) {
-        throw uhd::runtime_error(
-            str(boost::format("Master clock rate mismatch. Device returns %f MHz, "
-                              "but should have been %f MHz.")
-                % (_master_clock_rate / 1e6) % (block_args_mcr / 1e6)));
+        UHD_LOG_THROW(uhd::runtime_error,
+            get_unique_id(),
+            "Master clock rate mismatch. Device returns "
+                << std::fixed << std::setprecision(6) << (_master_clock_rate / 1e6)
+                << " MHz, but should have been " << (block_args_mcr / 1e6) << " MHz.");
     }
     RFNOC_LOG_DEBUG("Master Clock Rate is: " << (_master_clock_rate / 1e6) << " MHz.");
     set_tick_rate(_master_clock_rate);
@@ -61,10 +58,8 @@ void e3xx_radio_control_impl::_init_defaults()
         radio_control_impl::set_tx_bandwidth(E3XX_DEFAULT_BANDWIDTH, chan);
     }
 
-    _rx_sensor_names = _rpcc->request_with_token<std::vector<std::string>>(
-        this->_rpc_prefix + "get_sensors", "RX");
-    _tx_sensor_names = _rpcc->request_with_token<std::vector<std::string>>(
-        this->_rpc_prefix + "get_sensors", "TX");
+    _rx_sensor_names = db_rpc().get_sensors("RX");
+    _tx_sensor_names = db_rpc().get_sensors("TX");
 
     // Cache the filter names
     // FIXME: Uncomment this

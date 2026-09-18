@@ -20,7 +20,8 @@ namespace eval ::vivado_utils {
         write_implementation_outputs \
         get_top_module \
         get_part_name \
-        get_vivado_mode
+        get_vivado_mode \
+        exit_if_synth_only
 
     # Required environment variables
     variable g_tools_dir    $::env(VIV_TOOLS_DIR)
@@ -28,6 +29,7 @@ namespace eval ::vivado_utils {
     variable g_part_name    $::env(VIV_PART_NAME)
     variable g_output_dir   $::env(VIV_OUTPUT_DIR)
     variable g_source_files $::env(VIV_DESIGN_SRCS)
+    variable g_oot_srcs_file $::env(VIV_OOT_SRCS_FILE)
     variable g_vivado_mode  $::env(VIV_MODE)
     variable g_project_save $::env(VIV_PROJECT)
     variable g_secure_key   $::env(VIV_SECURE_KEY)
@@ -51,6 +53,7 @@ proc ::vivado_utils::initialize_project { {save_to_disk 0} } {
     variable g_part_name
     variable g_output_dir
     variable g_source_files
+    variable g_oot_srcs_file
     variable g_project_save
 
     variable bd_files ""
@@ -63,6 +66,18 @@ proc ::vivado_utils::initialize_project { {save_to_disk 0} } {
     } else {
         puts "BUILDER: Creating Vivado project in memory for part $g_part_name"
         create_project -in_memory -part $g_part_name
+    }
+
+    # Get OOT sources from resources file to avoid ARG_MAX issue
+    if {[info exists g_oot_srcs_file] && [file exists $g_oot_srcs_file]} {
+        puts "BUILDER: Reading sources from $g_oot_srcs_file"
+        set fh [open $g_oot_srcs_file r];
+        while {[gets $fh line] >= 0} {
+            if {$line ne ""} {
+                append g_source_files " " $line
+            }
+        }
+        close $fh
     }
 
     # Expand directories to include their contents (needed for HLS outputs)
@@ -78,7 +93,7 @@ proc ::vivado_utils::initialize_project { {save_to_disk 0} } {
         set src_ext [file extension $src_file ]
         if [expr [lsearch {.vhd .vhdl} $src_ext] >= 0] {
             puts "BUILDER: Adding VHDL: $src_file"
-            read_vhdl -library work $src_file
+            read_vhdl -vhdl2008 -library work $src_file
         } elseif [expr [lsearch {.v .vh} $src_ext] >= 0] {
             puts "BUILDER: Adding Verilog: $src_file"
             read_verilog $src_file
@@ -97,7 +112,9 @@ proc ::vivado_utils::initialize_project { {save_to_disk 0} } {
         } elseif [expr [lsearch {.xci} $src_ext] >= 0] {
             puts "BUILDER: Adding IP: $src_file"
             read_ip $src_file
-            set_property generate_synth_checkpoint true [get_files $src_file]
+            if {[catch {set_property generate_synth_checkpoint true [get_files $src_file]} errorstring]} {
+                puts "BUILDER: Failed to set synth checkpoint generation ($errorstring). The process will continue."
+            }
         } elseif [expr [lsearch {.ngc .edif .edf} $src_ext] >= 0] {
             puts "BUILDER: Adding Netlist: $src_file"
             read_edif $src_file
@@ -136,6 +153,11 @@ proc ::vivado_utils::initialize_project { {save_to_disk 0} } {
     # prevents users from using JTAG after the build finishes. It will still
     # give a warning, in case they really do have a legitimate mismatch.
     set_param labtools.override_cs_server_version_check 1
+
+    # Print all the messages from following commands by setting the limit to a
+    # high number (the default is 100 and it can cause important messages to be
+    # missed).
+    set_param messaging.defaultLimit 10000
 }
 
 # ---------------------------------------------------
@@ -146,6 +168,9 @@ proc ::vivado_utils::synthesize_design {args} {
     variable g_part_name
     variable g_verilog_defs
     variable g_include_dirs
+
+    # automatically detect xpm libraries and include the respective libraries
+    auto_detect_xpm
 
     set vdef_args ""
     foreach vdef $g_verilog_defs {
@@ -413,6 +438,17 @@ proc ::vivado_utils::close_batch_project {} {
         close_project
     } else {
         puts "BUILDER: In GUI mode. Leaving project open."
+    }
+}
+
+# ---------------------------------------------------
+# Exit script after synthesis if VIV_SYNTH_ONLY is set
+# ---------------------------------------------------
+proc ::vivado_utils::exit_if_synth_only {} {
+    if {[info exists ::env(VIV_SYNTH_ONLY)] && $::env(VIV_SYNTH_ONLY) eq "1"} {
+        puts "BUILDER: VIV_SYNTH_ONLY set. Stopping after synthesis."
+        vivado_utils::close_batch_project
+        return -code return
     }
 }
 

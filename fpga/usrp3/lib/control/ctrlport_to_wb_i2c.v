@@ -11,14 +11,16 @@
 //
 // Parameters:
 //
-//   BASE_ADDRESS : Base address for CtrlPort registers.
+//   BASE_ADDRESS     : Base address for CtrlPort registers.
+//   REG_STRIDE_SIZE  : Address separation between registers.
 //
 
 `default_nettype wire
 
 
 module ctrlport_to_wb_i2c #(
-  parameter BASE_ADDRESS = 0
+  parameter BASE_ADDRESS = 0,
+  parameter REG_STRIDE_SIZE = 1
 ) (
   //---------------------------------------------------------------
   // ControlPort Slave
@@ -64,10 +66,11 @@ module ctrlport_to_wb_i2c #(
   wire        wb_ack_o;
   wire [31:0] wb_dat_o;
 
-  // Check for address to be in range [base_addr..base_addr+8)
-  localparam NUM_ADDRESSES = 8;
+  // Check for address to be in range [base_addr..base_addr+8*stride)
+  localparam REG_WINDOW_SIZE = 8*REG_STRIDE_SIZE;
+
   wire address_in_range = (s_ctrlport_req_addr >= BASE_ADDRESS) &&
-                          (s_ctrlport_req_addr < BASE_ADDRESS + NUM_ADDRESSES);
+                          (s_ctrlport_req_addr < BASE_ADDRESS + REG_WINDOW_SIZE);
 
   // Following chapter 3.2.3 (classic standard SINGLE WRITE cycle) of
   // https://cdn.opencores.org/downloads/wbspec_b4.pdf
@@ -100,25 +103,25 @@ module ctrlport_to_wb_i2c #(
       end else if (s_ctrlport_req_wr) begin
         // Assume there is a valid address
         //1-1 translation of wb to ctrl port interface
-        if (s_ctrlport_req_addr < 8) begin
+        if (address_in_range) begin
           wb_cyc_i <= 1'b1;
           wb_we_i <= 1'b1;
           wb_dat_i <= s_ctrlport_req_data;
         end
         case (s_ctrlport_req_addr)
-          BASE_ADDRESS + WB_PRER_LO: begin
+          BASE_ADDRESS + WB_PRER_LO * REG_STRIDE_SIZE: begin
             wb_adr_i = WB_PRER_LO;
           end
-          BASE_ADDRESS + WB_PRER_HI: begin
+          BASE_ADDRESS + WB_PRER_HI * REG_STRIDE_SIZE: begin
             wb_adr_i = WB_PRER_HI;
           end
-          BASE_ADDRESS + WB_CTR: begin
+          BASE_ADDRESS + WB_CTR * REG_STRIDE_SIZE: begin
             wb_adr_i = WB_CTR;
           end
-          BASE_ADDRESS + WB_TXR: begin
+          BASE_ADDRESS + WB_TXR * REG_STRIDE_SIZE: begin
             wb_adr_i = WB_TXR;
           end
-          BASE_ADDRESS + WB_CR: begin
+          BASE_ADDRESS + WB_CR * REG_STRIDE_SIZE: begin
             wb_adr_i = WB_CR;
           end
 
@@ -126,33 +129,36 @@ module ctrlport_to_wb_i2c #(
 
       // Read requests
       end else if (s_ctrlport_req_rd) begin
-        // Assume there is a valid address
-        wb_cyc_i <= 1'b1;
-        wb_we_i <= 1'b0;
 
-        case (s_ctrlport_req_addr)
-          BASE_ADDRESS + WB_PRER_LO: begin
-            wb_adr_i <= WB_PRER_LO;
-          end
-          BASE_ADDRESS + WB_PRER_HI: begin
-            wb_adr_i <= WB_PRER_HI;
-          end
-          BASE_ADDRESS + WB_CTR: begin
-            wb_adr_i <= WB_CTR;
-          end
-          BASE_ADDRESS + WB_RXR: begin
-            wb_adr_i = WB_RXR;
-          end
-          BASE_ADDRESS + WB_SR: begin
-            wb_adr_i = WB_SR;
-          end
-          // Respond with 0
-          default: begin
-              s_ctrlport_resp_ack <= 1'b1;
-              s_ctrlport_resp_data <= 'b0;
-          end
+        if(address_in_range) begin
+          // Assume there is a valid address
+          wb_cyc_i <= 1'b1;
+          wb_we_i <= 1'b0;
 
-        endcase
+          case (s_ctrlport_req_addr)
+            BASE_ADDRESS + WB_PRER_LO * REG_STRIDE_SIZE: begin
+              wb_adr_i <= WB_PRER_LO;
+            end
+            BASE_ADDRESS + WB_PRER_HI * REG_STRIDE_SIZE: begin
+              wb_adr_i <= WB_PRER_HI;
+            end
+            BASE_ADDRESS + WB_CTR * REG_STRIDE_SIZE: begin
+              wb_adr_i <= WB_CTR;
+            end
+            BASE_ADDRESS + WB_RXR * REG_STRIDE_SIZE: begin
+              wb_adr_i = WB_RXR;
+            end
+            BASE_ADDRESS + WB_SR * REG_STRIDE_SIZE: begin
+              wb_adr_i = WB_SR;
+            end
+            // Respond with 0
+            default: begin
+                s_ctrlport_resp_ack <= 1'b1;
+                s_ctrlport_resp_data <= 'b0;
+            end
+
+          endcase
+        end
       end
     end
   end

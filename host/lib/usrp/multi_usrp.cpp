@@ -907,6 +907,11 @@ public:
         return sum;
     }
 
+    size_t get_rx_radio_channel(size_t chan = 0) override
+    {
+        return rx_chan_to_mcp(chan).chan;
+    }
+
     std::string get_rx_subdev_name(size_t chan) override
     {
         return _tree->access<std::string>(rx_rf_fe_root(chan) / "name").get();
@@ -1942,6 +1947,11 @@ public:
         return sum;
     }
 
+    size_t get_tx_radio_channel(size_t chan = 0) override
+    {
+        return tx_chan_to_mcp(chan).chan;
+    }
+
     std::string get_tx_subdev_name(size_t chan) override
     {
         return _tree->access<std::string>(tx_rf_fe_root(chan) / "name").get();
@@ -2705,9 +2715,10 @@ private:
         return gg;
     }
 
-    //! \param is_tx True for tx
-    // Assumption is that all mboards use the same link
-    // and that the rate sum is evenly distributed among the mboards
+    /*! \param is_tx True for tx
+     * Assumption is that all mboards use the same link
+     * and that the rate sum is evenly distributed among the mboards
+     */
     bool _check_link_rate(const stream_args_t& args, bool is_tx)
     {
         bool link_rate_is_ok    = true;

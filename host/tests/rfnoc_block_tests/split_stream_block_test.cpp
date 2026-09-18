@@ -16,13 +16,11 @@
 using namespace uhd::rfnoc;
 using namespace uhd::rfnoc::test;
 
-// Redeclare this here, since it's only defined outside of UHD_API
-noc_block_base::make_args_t::~make_args_t() = default;
-
 struct split_stream_block_fixture
 {
-    //! Create a split stream block having a particular number of input and
-    //  and output ports.
+    /*! \brief Create a split stream block having a particular number of input and
+     *  output ports.
+     */
     void create_block(size_t num_inputs, size_t num_outputs)
     {
         num_input_ports  = num_inputs;
@@ -33,8 +31,9 @@ struct split_stream_block_fixture
         node_accessor.init_props(test_split_stream.get());
     }
 
-    //! Connect one source and N sinks, one per branch, to the split stream
-    //  block.
+    /*! \brief Connect one source and N sinks, one per branch, to the split stream
+     *  block.
+     */
     void connect_graph(detail::graph_t& graph,
         mock_edge_node_t& source,
         const std::vector<std::unique_ptr<mock_edge_node_t>>& sinks)

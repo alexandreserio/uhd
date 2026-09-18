@@ -65,6 +65,26 @@ LIBUHD_REGISTER_COMPONENT("USB" ENABLE_USB ON "ENABLE_LIBUHD;LIBUSB_FOUND" OFF O
 # Devices
 LIBUHD_REGISTER_COMPONENT("B100" ENABLE_B100 ON "ENABLE_LIBUHD;ENABLE_USB" OFF OFF)
 LIBUHD_REGISTER_COMPONENT("B200" ENABLE_B200 ON "ENABLE_LIBUHD;ENABLE_USB" OFF OFF)
+# B300 support is available on Linux and Windows.
+# Only Linux requires the nib310rio kernel driver userspace header.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_file(NIB310RIO_HEADER
+        NAMES nib310rio/nib310rio.h
+        DOC "nib310rio kernel driver userspace header (from nib310rio-dev package)")
+    if(NIB310RIO_HEADER)
+        set(NIB310RIO_FOUND TRUE)
+    else()
+        set(NIB310RIO_FOUND FALSE)
+        message(STATUS "nib310rio/nib310rio.h not found — B300 support requires the nib310rio-dev package.")
+    endif()
+elseif(WIN32)
+    # Windows B300 support does not depend on nib310rio/nib310rio.h.
+    set(NIB310RIO_FOUND TRUE)
+else()
+    # B300 is not supported on other platforms (e.g., macOS).
+    set(NIB310RIO_FOUND FALSE)
+endif()
+LIBUHD_REGISTER_COMPONENT("B300" ENABLE_B300 ON "ENABLE_LIBUHD;NIB310RIO_FOUND" OFF OFF)
 LIBUHD_REGISTER_COMPONENT("USRP1" ENABLE_USRP1 ON "ENABLE_LIBUHD;ENABLE_USB" OFF OFF)
 LIBUHD_REGISTER_COMPONENT("USRP2" ENABLE_USRP2 ON "ENABLE_LIBUHD" OFF OFF)
 LIBUHD_REGISTER_COMPONENT("X300" ENABLE_X300 ON "ENABLE_LIBUHD" OFF OFF)
@@ -175,26 +195,39 @@ endif(MSVC)
 # Setup libuhd library
 ########################################################################
 add_library(uhd SHARED ${libuhd_sources})
+if(DEFINED UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS)
+    # Define variable to expand target_link_libraries for
+    # both static and dynamic builds.
+    # Note: libuhd_libs is limited to dynamic linked build
+    set(libuhd_boost_msvc_libs "")
+    foreach(comp ${UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS})
+        list(APPEND libuhd_boost_msvc_libs Boost::${comp})
+    endforeach()
+endif(DEFINED UHD_BOOST_REQUIRED_ADDITIONAL_WINDOWS_COMPONENTS)
 target_link_libraries(uhd
     PUBLIC
     Boost::boost
-    Boost::chrono
-    Boost::date_time
     Boost::filesystem
     Boost::serialization
-    Boost::thread
+    ${libuhd_boost_msvc_libs}
     ${libuhd_libs}
     PRIVATE uhd_rc
 )
 
-function(UHD_LIB_ADD_RPCLIB uhd_lib_name)
-    target_include_directories(${uhd_lib_name} PRIVATE deps/rpclib/include)
-    target_sources(${uhd_lib_name} PRIVATE $<TARGET_OBJECTS:uhd_rpclib>)
-endfunction(UHD_LIB_ADD_RPCLIB)
+if(MINGW)
+    target_link_libraries(uhd PRIVATE mswsock)
+endif(MINGW)
 
 if(ENABLE_MPMD)
     add_subdirectory(deps)
-    UHD_LIB_ADD_RPCLIB(uhd)
+    # Link gRPC and protobuf as PRIVATE: they are internal implementation details
+    # and must not be exported into UHDTargets.cmake (would break find_package(UHD)
+    # in consumer projects that have not loaded protobuf/gRPC themselves).
+    target_link_libraries(uhd PRIVATE protobuf::libprotobuf gRPC::grpc++)
+    # utf8_range is a static-only dep on Windows; on Linux it is transitively resolved
+    if(WIN32)
+        target_link_libraries(uhd PRIVATE utf8_range::utf8_range utf8_range::utf8_validity)
+    endif()
 endif()
 
 if(ENABLE_DPDK)
@@ -265,6 +298,11 @@ endif(NOT UHDHOST_PKG)
 # Create a function so we have a separate variable scope for Boost_USE_STATIC_LIBS
 function(UHD_ADD_STATIC_LIB)
     set(Boost_USE_STATIC_LIBS ON) # only find static libs
+    message(STATUS "Boost_USE_STATIC_LIBS=${Boost_USE_STATIC_LIBS}")
+    if(MSVC)
+        # On Windows appending Boost::system to ensure successful linking
+        list(APPEND UHD_BOOST_REQUIRED_COMPONENTS system)
+    endif(MSVC)
     include(UHDBoost)
     add_library(uhd_static STATIC ${libuhd_sources} $<TARGET_OBJECTS:uhd_rc>)
     set_target_properties(uhd_static PROPERTIES OUTPUT_NAME uhd)
@@ -272,12 +310,10 @@ function(UHD_ADD_STATIC_LIB)
     target_link_libraries(uhd_static
         PUBLIC
         Boost::boost
-        Boost::chrono
-        Boost::date_time
         Boost::filesystem
         Boost::serialization
         Boost::system
-        Boost::thread
+        ${libuhd_boost_msvc_libs}
     )
     target_include_directories(uhd_static
         PRIVATE

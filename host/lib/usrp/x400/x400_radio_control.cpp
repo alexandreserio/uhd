@@ -13,14 +13,17 @@
 #include <uhd/utils/math.hpp>
 #include <uhdlib/rfnoc/reg_iface_adapter.hpp>
 #include <uhdlib/usrp/common/x400_rfdc_control.hpp>
+#include <uhdlib/usrp/common/x4xx_ch_modes.hpp>
 #include <uhdlib/usrp/cores/spi_core_4000.hpp>
 #include <uhdlib/usrp/dboard/debug_dboard.hpp>
 #include <uhdlib/usrp/dboard/fbx/fbx_dboard.hpp>
+#include <uhdlib/usrp/dboard/hbx/hbx_dboard.hpp>
 #include <uhdlib/usrp/dboard/null_dboard.hpp>
 #include <uhdlib/usrp/dboard/zbx/zbx_dboard.hpp>
 #include <uhdlib/utils/prefs.hpp>
 #include <future>
 
+using uhd::usrp::x400::ch_mode;
 namespace uhd { namespace rfnoc {
 
 x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
@@ -31,7 +34,6 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
     UHD_ASSERT_THROW(get_block_id().get_block_count() < 2);
     constexpr char radio_slot_name[2] = {'A', 'B'};
     _radio_slot                       = radio_slot_name[get_block_id().get_block_count()];
-    _rpc_prefix = get_block_id().get_block_count() == 1 ? "db_1_" : "db_0_";
 
     UHD_ASSERT_THROW(get_mb_controller());
     _mb_control = std::dynamic_pointer_cast<mpmd_mb_controller>(get_mb_controller());
@@ -46,16 +48,9 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
     _x4xx_timekeeper = std::dynamic_pointer_cast<mpmd_mb_controller::mpmd_timekeeper>(
         _mb_control->get_timekeeper(tk_idx));
     UHD_ASSERT_THROW(_x4xx_timekeeper);
-    _rpcc = _mb_control->dynamic_cast_rpc_as<uhd::usrp::x400_rpc_iface>();
-    if (!_rpcc) {
-        _rpcc = std::make_shared<uhd::usrp::x400_rpc>(_mb_control->get_rpc_client());
-    }
-
-    _db_rpcc = _mb_control->dynamic_cast_rpc_as<uhd::usrp::dboard_base_rpc_iface>();
-    if (!_db_rpcc) {
-        _db_rpcc = std::make_shared<uhd::usrp::dboard_base_rpc>(
-            _mb_control->get_rpc_client(), _rpc_prefix);
-    }
+    // X400 RPC interfaces are just rpc_client aliases, no wrapping needed
+    _rpcc    = _mb_control->get_rpc_client();
+    _db_rpcc = &_rpcc->get_dboard(get_block_id().get_block_count());
 
     const auto all_dboard_info = _rpcc->get_dboard_info();
     RFNOC_LOG_TRACE("Hardware detected " << all_dboard_info.size() << " daughterboards.");
@@ -107,7 +102,7 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
 
     // We may have physical daughterboards in the system, but no GPIO interface to the
     // daughterboard in the FPGA. In this case, just instantiate the null daughterboard.
-    if (!_rpcc->is_db_gpio_ifc_present(get_block_id().get_block_count())) {
+    if (!_db_rpcc->is_db_gpio_ifc_present()) {
         RFNOC_LOG_WARNING(
             "Skipping daughterboard initialization, no GPIO interface in FPGA");
         _daughterboard = std::make_shared<null_dboard_impl>();
@@ -115,29 +110,22 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
     }
 
     if (std::stol(pid) == uhd::usrp::zbx::ZBX_PID) {
-        auto zbx_rpc_sptr = _mb_control->dynamic_cast_rpc_as<uhd::usrp::zbx_rpc_iface>();
-        if (!zbx_rpc_sptr) {
-            zbx_rpc_sptr = std::make_shared<uhd::usrp::zbx_rpc>(
-                _mb_control->get_rpc_client(), _rpc_prefix);
-        }
+        auto zbx_rpc_sptr = std::make_shared<uhd::usrp::zbx_rpc_iface>(
+            _mb_control->get_rpc_client(), get_block_id().get_block_count());
         _daughterboard = std::make_shared<uhd::usrp::zbx::zbx_dboard_impl>(
             regs(),
             regmap::PERIPH_BASE,
             [this](const size_t instance) { return get_command_time(instance); },
             get_block_id().get_block_count(),
             _radio_slot,
-            _rpc_prefix,
             get_unique_id(),
             _rpcc,
             zbx_rpc_sptr,
             _rfdcc,
             get_tree());
     } else if (std::stol(pid) == uhd::usrp::fbx::FBX_PID) {
-        auto fbx_rpc_sptr = _mb_control->dynamic_cast_rpc_as<uhd::usrp::fbx_rpc_iface>();
-        if (!fbx_rpc_sptr) {
-            fbx_rpc_sptr = std::make_shared<uhd::usrp::fbx_rpc>(
-                _mb_control->get_rpc_client(), _rpc_prefix);
-        }
+        auto fbx_rpc_sptr = std::make_shared<uhd::usrp::fbx_rpc_iface>(
+            _mb_control->get_rpc_client(), get_block_id().get_block_count());
         _daughterboard = std::make_shared<uhd::usrp::fbx::fbx_dboard_impl>(
             regs(),
             regmap::PERIPH_BASE,
@@ -146,7 +134,6 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
             _radio_slot,
             get_num_input_ports(),
             get_num_output_ports(),
-            _rpc_prefix,
             get_unique_id(),
             _rpcc,
             fbx_rpc_sptr,
@@ -161,15 +148,45 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
                 uhd::features::internal_sync(fbx_dboard->get_fbx_ctrl()));
             register_feature(int_sync);
         }
+    } else if (std::stol(pid) == uhd::usrp::hbx::HBX_PID) {
+        const auto args      = get_block_args();
+        bool ignore_cal_file = false;
+        if (args.has_key("ignore-cal-file")) {
+            ignore_cal_file = args.get("ignore-cal-file") == "1";
+        }
+        if (ignore_cal_file) {
+            RFNOC_LOG_WARNING("Ignoring IQ correction and Power calibration files.");
+        }
+
+        auto hbx_rpc_sptr = std::make_shared<uhd::usrp::hbx_rpc>(
+            _mb_control->get_rpc_client(), get_block_id().get_block_count());
+        _daughterboard = std::make_shared<uhd::usrp::hbx::hbx_dboard_impl>(
+            regs(),
+            regmap::PERIPH_BASE,
+            [this](const size_t instance) { return get_command_time(instance); },
+            get_block_id().get_block_count(),
+            _radio_slot,
+            get_unique_id(),
+            _rpcc,
+            hbx_rpc_sptr,
+            _rfdcc,
+            get_tree(),
+            ignore_cal_file,
+            master_clock_rate);
+
+        auto hbx_dboard =
+            std::dynamic_pointer_cast<uhd::usrp::hbx::hbx_dboard_impl>(_daughterboard);
+        if (hbx_dboard != NULL) {
+            RFNOC_LOG_DEBUG("Registering internal sync feature")
+            auto int_sync = std::make_shared<uhd::features::internal_sync>(
+                uhd::features::internal_sync(hbx_dboard->get_hbx_cpld_ctrl()));
+            register_feature(int_sync);
+        }
     } else if (std::stol(pid) == uhd::rfnoc::DEBUG_DB_PID) {
         _daughterboard = std::make_shared<debug_dboard_impl>();
     } else if (std::stol(pid) == uhd::rfnoc::IF_TEST_DBOARD_PID) {
-        _daughterboard =
-            std::make_shared<if_test_dboard_impl>(get_block_id().get_block_count(),
-                _rpc_prefix,
-                get_unique_id(),
-                _mb_control,
-                get_tree());
+        _daughterboard = std::make_shared<if_test_dboard_impl>(
+            get_block_id().get_block_count(), get_unique_id(), _mb_control, get_tree());
     } else if (std::stol(pid) == uhd::rfnoc::EMPTY_DB_PID) {
         _daughterboard = std::make_shared<empty_slot_dboard_impl>();
         set_num_output_ports(0);
@@ -190,12 +207,8 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
     _rx_gain_profile_api = _daughterboard->get_rx_gain_profile_api();
 
     if (_daughterboard->is_adc_self_cal_supported()) {
-        _adc_self_calibration =
-            std::make_shared<uhd::features::adc_self_calibration>(_rpcc,
-                _rpc_prefix,
-                get_unique_id(),
-                get_block_id().get_block_count(),
-                _daughterboard);
+        _adc_self_calibration = std::make_shared<uhd::features::adc_self_calibration>(
+            _rpcc, get_unique_id(), get_block_id().get_block_count(), _daughterboard);
         register_feature(_adc_self_calibration);
     }
 
@@ -203,9 +216,6 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
     if (mpm_rpc->get_gpio_banks().size() > 0) {
         _gpios = std::make_shared<x400::gpio_control>(
             _rpcc, _mb_control, RFNOC_MAKE_WB_IFACE(regmap::PERIPH_BASE + 0xC000, 0));
-
-        auto gpio_port_mapper = std::shared_ptr<uhd::mapper::gpio_port_mapper>(
-            new uhd::rfnoc::x400::x400_gpio_port_mapping);
 
         // Check if SPI is available as GPIO source, otherwise don't register
         // SPI_GETTER_IFace
@@ -222,8 +232,7 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
                 x400_regs::SPI_TRANSACTION_CFG_REG,
                 x400_regs::SPI_TRANSACTION_GO_REG,
                 x400_regs::SPI_STATUS_REG,
-                x400_regs::SPI_CONTROLLER_INFO_REG,
-                gpio_port_mapper);
+                x400_regs::SPI_CONTROLLER_INFO_REG);
 
             _spi_getter_iface = std::make_shared<x400_spi_getter>(spicore);
             register_feature(_spi_getter_iface);
@@ -267,8 +276,8 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
                                 cal_futures.push_back(std::async(std::launch::async,
                                     [&self_cal, i, args]() { self_cal.run(i, args); }));
                             } else {
-                                self_cal.run(i, args);
                                 RFNOC_LOG_INFO("Calibrating channel " << abs_ch << "...");
+                                self_cal.run(i, args);
                             }
                             num_calibrations++;
                         }
@@ -303,7 +312,6 @@ x400_radio_control_impl::x400_radio_control_impl(make_args_ptr make_args)
 void x400_radio_control_impl::_init_prop_tree()
 {
     auto subtree = get_tree()->subtree(fs_path("mboard"));
-
     for (size_t chan_idx = 0; chan_idx < get_num_output_ports(); chan_idx++) {
         const fs_path rx_codec_path =
             fs_path("rx_codec") / get_dboard_fe_from_chan(chan_idx, uhd::RX_DIRECTION);
@@ -316,44 +324,48 @@ void x400_radio_control_impl::_init_prop_tree()
         // ADC calibration state attributes
         subtree->create<bool>(rx_codec_path / "calibration_frozen")
             .add_coerced_subscriber([this, chan_idx](bool state) {
-                _rpcc->set_cal_frozen(state, get_block_id().get_block_count(), chan_idx);
+                _rpcc->get_dboard(get_block_id().get_block_count())
+                    .set_cal_frozen(state, chan_idx, size_t(ch_mode::ALL));
             })
             .set_publisher([this, chan_idx]() {
                 const auto freeze_states =
-                    _rpcc->get_cal_frozen(get_block_id().get_block_count(), chan_idx);
+                    _rpcc->get_dboard(get_block_id().get_block_count())
+                        .get_cal_frozen(chan_idx, size_t(ch_mode::ALL));
                 return freeze_states.at(0) == 1;
             });
 
         // RFDC NCO
+        // The NCO is typically only used for converters used in Real mode, therefore we
+        // expose it on the FE path that corresponds to the current channel in Real mode.
         // RX
         subtree->create<double>(rx_codec_path / "rfdc" / "freq/value")
             .add_desired_subscriber([this, chan_idx](double freq) {
-                _rpcc->rfdc_set_nco_freq(_get_trx_string(RX_DIRECTION),
-                    get_block_id().get_block_count(),
+                _db_rpcc->rfdc_set_nco_freq(_get_trx_string(RX_DIRECTION),
                     chan_idx,
-                    freq);
+                    freq,
+                    static_cast<size_t>(ch_mode::REAL));
             })
             .set_publisher([this, chan_idx]() {
                 const auto nco_freq =
-                    _rpcc->rfdc_get_nco_freq(_get_trx_string(RX_DIRECTION),
-                        get_block_id().get_block_count(),
-                        chan_idx);
+                    _db_rpcc->rfdc_get_nco_freq(_get_trx_string(RX_DIRECTION),
+                        chan_idx,
+                        static_cast<size_t>(ch_mode::REAL));
                 return nco_freq;
             });
 
         // TX
         subtree->create<double>(tx_codec_path / "rfdc" / "freq/value")
             .add_desired_subscriber([this, chan_idx](double freq) {
-                _rpcc->rfdc_set_nco_freq(_get_trx_string(TX_DIRECTION),
-                    get_block_id().get_block_count(),
+                _db_rpcc->rfdc_set_nco_freq(_get_trx_string(TX_DIRECTION),
                     chan_idx,
-                    freq);
+                    freq,
+                    static_cast<size_t>(ch_mode::REAL));
             })
             .set_publisher([this, chan_idx]() {
                 const auto nco_freq =
-                    _rpcc->rfdc_get_nco_freq(_get_trx_string(TX_DIRECTION),
-                        get_block_id().get_block_count(),
-                        chan_idx);
+                    _db_rpcc->rfdc_get_nco_freq(_get_trx_string(TX_DIRECTION),
+                        chan_idx,
+                        static_cast<size_t>(ch_mode::REAL));
                 return nco_freq;
             });
     }
@@ -374,10 +386,11 @@ void x400_radio_control_impl::_validate_master_clock_rate_args()
     // configured to do.
     const double master_clock_rate = _db_rpcc->get_master_clock_rate();
     if (!uhd::math::frequencies_are_equal(get_rate(), master_clock_rate)) {
-        throw uhd::runtime_error(
-            str(boost::format("Master clock rate mismatch. Device returns %f MHz, "
-                              "but should have been %f MHz.")
-                % (master_clock_rate / 1e6) % (get_rate() / 1e6)));
+        UHD_LOG_THROW(uhd::runtime_error,
+            get_unique_id(),
+            "Master clock rate mismatch. Device returns "
+                << std::fixed << std::setprecision(6) << (master_clock_rate / 1e6)
+                << " MHz, but should have been " << (get_rate() / 1e6) << " MHz.");
     }
     RFNOC_LOG_DEBUG("Master Clock Rate is: " << (master_clock_rate / 1e6) << " MHz.");
 }

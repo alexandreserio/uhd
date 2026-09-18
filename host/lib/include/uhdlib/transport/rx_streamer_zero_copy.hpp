@@ -8,10 +8,10 @@
 
 #include <uhd/config.hpp>
 #include <uhd/exception.hpp>
+#include <uhd/types/device_addr.hpp>
 #include <uhd/types/metadata.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhdlib/transport/get_aligned_buffs.hpp>
-#include <boost/format.hpp>
 #include <atomic>
 #include <vector>
 
@@ -126,6 +126,21 @@ public:
     size_t get_num_channels() const
     {
         return _xports.size();
+    }
+
+    //! Get transport info for a specific channel
+    uhd::device_addr_t get_xport_info(const size_t chan) const
+    {
+        if (chan >= _xports.size()) {
+            throw uhd::index_error("Invalid channel index for get_xport_info");
+        }
+
+        if (!_xports[chan]) {
+            return uhd::device_addr_t(); // Return empty if no transport connected
+        }
+
+        // Call get_xport_info() on the underlying transport
+        return _xports[chan]->get_xport_info();
     }
 
     //! Configures tick rate for conversion of timestamp

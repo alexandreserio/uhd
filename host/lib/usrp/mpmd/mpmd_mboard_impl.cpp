@@ -12,6 +12,8 @@
 #include <uhd/utils/safe_call.hpp>
 #include <chrono>
 #include <memory>
+#include <optional>
+#include <set>
 #include <thread>
 
 namespace {
@@ -66,8 +68,7 @@ bool is_pingable(const std::string& ip_addr, const std::string& udp_port)
  */
 void init_device(uhd::rpc_client::sptr rpc, const uhd::device_addr_t mb_args)
 {
-    auto init_status = rpc->request_with_token<std::vector<std::string>>(
-        MPMD_DEFAULT_INIT_TIMEOUT, "get_init_status");
+    auto init_status = rpc->get_init_status();
     if (init_status[0] != "true") {
         throw uhd::runtime_error(
             std::string("Device is in bad state: ") + init_status[1]);
@@ -81,8 +82,7 @@ void init_device(uhd::rpc_client::sptr rpc, const uhd::device_addr_t mb_args)
             mpm_device_args[key] = mb_args[key];
         }
     }
-    if (not rpc->request_with_token<bool>(
-            MPMD_DEFAULT_INIT_TIMEOUT, "init", mpm_device_args)) {
+    if (!rpc->init(mpm_device_args)) {
         throw uhd::runtime_error("Failed to initialize device.");
     }
 }
@@ -94,7 +94,7 @@ void measure_rpc_latency(
     const std::string payload = "1234567890";
     auto measure_once         = [payload, rpc]() {
         const auto start = std::chrono::steady_clock::now();
-        rpc->request<std::string>("ping", payload);
+        rpc->ping(payload);
         return (double)std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - start)
             .count();
@@ -125,25 +125,30 @@ void measure_rpc_latency(
 /*! Forward entries from a list of dictionaries to UHD's native logging
  *  system.
  */
-void forward_logs(log_buf_t&& log_buf)
+void forward_logs(log_buf_t&& log_buf, const size_t mb_index)
 {
     for (const auto& log_record : log_buf) {
+        std::string log_name{
+            log_record.count("name") ? log_record.at("name") : "UNKNOWN MPMD"};
+        if (log_name.compare(0, 3, "MPM") == 0) {
+            log_name = std::to_string(mb_index) + "/" + log_name;
+        }
         if (log_record.count("levelname") == 0 or log_record.count("message") == 0) {
             UHD_LOG_ERROR("MPMD", "Invalid logging structure returned from MPM device!");
             continue;
         }
         if (log_record.at("levelname") == "TRACE") {
-            UHD_LOG_TRACE(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_TRACE(log_name, log_record.at("message"));
         } else if (log_record.at("levelname") == "DEBUG") {
-            UHD_LOG_DEBUG(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_DEBUG(log_name, log_record.at("message"));
         } else if (log_record.at("levelname") == "INFO") {
-            UHD_LOG_INFO(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_INFO(log_name, log_record.at("message"));
         } else if (log_record.at("levelname") == "WARNING") {
-            UHD_LOG_WARNING(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_WARNING(log_name, log_record.at("message"));
         } else if (log_record.at("levelname") == "ERROR") {
-            UHD_LOG_ERROR(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_ERROR(log_name, log_record.at("message"));
         } else if (log_record.at("levelname") == "CRITICAL") {
-            UHD_LOG_FATAL(log_record.at("name"), log_record.at("message"));
+            UHD_LOG_FATAL(log_name, log_record.at("message"));
         } else {
             UHD_LOG_ERROR("MPMD",
                 "Invalid log level returned from MPM device: "
@@ -160,10 +165,9 @@ uhd::rpc_client::sptr make_mpm_rpc_client(const std::string& rpc_server_addr,
     const size_t timeout_ms = MPMD_DEFAULT_RPC_TIMEOUT)
 {
     return uhd::rpc_client::make(rpc_server_addr,
-        mb_args.cast<size_t>(
+        mb_args.cast<uint16_t>(
             uhd::mpmd::mpmd_impl::MPM_RPC_PORT_KEY, uhd::mpmd::mpmd_impl::MPM_RPC_PORT),
-        timeout_ms,
-        uhd::mpmd::mpmd_impl::MPM_RPC_GET_LAST_ERROR_CMD);
+        timeout_ms);
 }
 
 } // namespace
@@ -174,7 +178,7 @@ using namespace uhd::mpmd;
 /******************************************************************************
  * Static Helpers
  *****************************************************************************/
-boost::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
+std::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
     const device_addr_t& device_addr)
 {
     UHD_LOG_TRACE(
@@ -186,23 +190,23 @@ boost::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
     // 1) Read back device info
     dev_info device_info_dict;
     try {
-        auto rpcc = uhd::rpc_client::make(rpc_addr, rpc_port);
-        device_info_dict =
-            rpcc->request<dev_info>(MPMD_SHORT_RPC_TIMEOUT, "get_device_info");
+        auto rpcc = uhd::rpc_client::make(
+            rpc_addr, static_cast<uint16_t>(rpc_port), MPMD_SHORT_RPC_TIMEOUT);
+        device_info_dict = rpcc->get_device_info();
     } catch (const uhd::runtime_error& e) {
         UHD_LOG_DEBUG("MPMD", e.what());
-        return boost::optional<device_addr_t>();
+        return std::nullopt;
     } catch (...) {
         UHD_LOG_DEBUG("MPMD",
             "Unexpected exception when trying to query device info. Flagging "
             "device as unreachable.");
-        return boost::optional<device_addr_t>();
+        return std::nullopt;
     }
     // 2) Check for local device
     if (device_info_dict.count("connection")
         and device_info_dict.at("connection") == "local") {
         UHD_LOG_TRACE("MPMD", "Device is local, flagging as reachable.");
-        return boost::optional<device_addr_t>(device_addr);
+        return std::make_optional<device_addr_t>(device_addr);
     }
     // 3) Check for network-reachable device
     // Note: This makes the assumption that devices will always allow RPC
@@ -228,9 +232,9 @@ boost::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
                 continue;
             }
             UHD_LOG_TRACE("MPMD", "Was able to ping device, trying RPC connection.");
-            auto chdr_rpcc = uhd::rpc_client::make(chdr_addr, rpc_port);
-            auto dev_info_chdr =
-                chdr_rpcc->request<dev_info>(MPMD_SHORT_RPC_TIMEOUT, "get_device_info");
+            auto chdr_rpcc = uhd::rpc_client::make(
+                chdr_addr, static_cast<uint16_t>(rpc_port), MPMD_SHORT_RPC_TIMEOUT);
+            auto dev_info_chdr = chdr_rpcc->get_device_info();
             if (dev_info_chdr["serial"] != device_info_dict["serial"]) {
                 UHD_LOG_DEBUG("MPMD",
                     boost::format("Connected to CHDR interface, but got wrong device. "
@@ -244,7 +248,7 @@ boost::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
             }
             device_addr_t device_addr_copy = device_addr;
             device_addr_copy["addr"]       = chdr_addr;
-            return boost::optional<device_addr_t>(device_addr_copy);
+            return std::make_optional<device_addr_t>(device_addr_copy);
         } catch (...) {
             UHD_LOG_DEBUG(
                 "MPMD", "Failed to reach device on network addr " << chdr_addr << ".");
@@ -259,27 +263,30 @@ boost::optional<device_addr_t> mpmd_mboard_impl::is_device_reachable(
         // via Virtual NIC packet fowarding.
         device_addr_t device_addr_copy = device_addr;
         device_addr_copy["addr"]       = rpc_addr;
-        return boost::optional<device_addr_t>(device_addr_copy);
+        return std::make_optional<device_addr_t>(device_addr_copy);
     }
     // If everything fails, we probably can't talk to this chap.
     UHD_LOG_TRACE(
         "MPMD", "All reachability checks failed -- assuming device is not reachable.");
-    return boost::optional<device_addr_t>();
+    return std::nullopt;
 }
 
 /*****************************************************************************
  * Structors
  ****************************************************************************/
-mpmd_mboard_impl::mpmd_mboard_impl(
-    const device_addr_t& mb_args_, const std::string& rpc_server_addr)
+mpmd_mboard_impl::mpmd_mboard_impl(const device_addr_t& mb_args_,
+    const std::string& rpc_server_addr,
+    const size_t mb_idx)
     : mb_args(mb_args_)
     , rpc(make_mpm_rpc_client(rpc_server_addr, mb_args_))
     , _claim_rpc(make_mpm_rpc_client(rpc_server_addr, mb_args, MPMD_CLAIMER_RPC_TIMEOUT))
+    , _mb_index(mb_idx)
+    , _log_id(std::to_string(mb_idx) + "/MPMD")
     , _rpc_server_addr(rpc_server_addr)
 {
-    UHD_LOGGER_TRACE("MPMD") << "Initializing mboard, connecting to RPC server address: "
-                             << rpc_server_addr
-                             << " mboard args: " << mb_args.to_string();
+    UHD_LOG_TRACE(_log_id,
+        "Initializing mboard , connecting to RPC server address: "
+            << rpc_server_addr << " mboard args: " << mb_args.to_string());
 
     _claimer_task = claim_device_and_make_task();
     if (mb_args_.has_key(MPMD_MEAS_LATENCY_KEY)) {
@@ -287,30 +294,36 @@ mpmd_mboard_impl::mpmd_mboard_impl(
     }
 
     /// Get device info
-    const auto device_info_dict = rpc->request<dev_info>("get_device_info");
+    // Use a longer timeout here: on gRPC, get_device_info() triggers
+    // live SFP interface probing (get_xport_info/_init_interfaces) which
+    // can take >2 s after an FPGA reload while netdev states settle.
+    const auto device_info_dict = [&]() {
+        [[maybe_unused]] auto timeout_scope =
+            rpc->set_scope_timeout(MPMD_LONG_RPC_TIMEOUT);
+        return rpc->get_device_info();
+    }();
     for (const auto& info_pair : device_info_dict) {
         device_info[info_pair.first] = info_pair.second;
     }
-    UHD_LOG_DEBUG("MPMD", "MPM reports device info: " << device_info.to_string());
+    UHD_LOG_DEBUG(_log_id, "MPM reports device info: " << device_info.to_string());
     /// Get dboard info
-    const auto dboards_info = rpc->request<std::vector<dev_info>>("get_dboard_info");
+    const auto dboards_info = rpc->get_dboard_info();
     UHD_ASSERT_THROW(this->dboard_info.empty());
     for (const auto& dboard_info_dict : dboards_info) {
         uhd::device_addr_t this_db_info;
         for (const auto& info_pair : dboard_info_dict) {
             this_db_info[info_pair.first] = info_pair.second;
         }
-        UHD_LOGGER_TRACE("MPMD")
-            << "MPM reports dboard info for slot " << this->dboard_info.size() << ": "
-            << this_db_info.to_string();
+        UHD_LOG_TRACE(_log_id,
+            "MPM reports dboard info for slot " << this->dboard_info.size() << ": "
+                                                << this_db_info.to_string());
         this->dboard_info.push_back(this_db_info);
     }
 
     if (!mb_args.has_key("skip_init")) {
         // Initialize mb_iface and mb_controller
-        mb_iface = std::make_unique<mpmd_mb_iface>(mb_args, rpc);
-        mb_ctrl  = std::make_shared<rfnoc::mpmd_mb_controller>(
-            std::make_shared<uhd::usrp::mpmd_rpc>(rpc), device_info);
+        mb_iface = std::make_unique<mpmd_mb_iface>(mb_args, rpc, mb_idx);
+        mb_ctrl  = std::make_shared<rfnoc::mpmd_mb_controller>(rpc, device_info, mb_idx);
     } // Note -- when skip_init is used, these are not initialized, and trying
       // to use them will result in a null pointer dereference exception!
 }
@@ -319,10 +332,9 @@ mpmd_mboard_impl::~mpmd_mboard_impl()
 {
     // Destroy the claimer task to avoid spurious asynchronous reclaim call
     // after the unclaim.
-    UHD_SAFE_CALL(dump_logs(); _claimer_task.reset();
-                  if (not rpc->request_with_token<bool>("unclaim")) {
-                      UHD_LOG_WARNING("MPMD", "Failure to ack unclaim!");
-                  });
+    UHD_SAFE_CALL(dump_logs(); _claimer_task.reset(); if (!rpc->unclaim()) {
+        UHD_LOG_WARNING(_log_id, "Failure to ack unclaim!");
+    });
 }
 
 /*****************************************************************************
@@ -331,18 +343,20 @@ mpmd_mboard_impl::~mpmd_mboard_impl()
 void mpmd_mboard_impl::init()
 {
     init_device(rpc, mb_args);
-    auto need_mpm_reboot =
-        rpc->request_with_token<std::vector<std::map<std::string, std::string>>>(
-            "pop_host_tasks", "mpm_reboot");
+    auto need_mpm_reboot = rpc->pop_host_tasks("mpm_reboot");
     if (!need_mpm_reboot.empty()) {
-        UHD_LOG_DEBUG("MPMD", "Bracing for potential loss of RPC server connection.");
+        UHD_LOG_DEBUG(_log_id, "Bracing for potential loss of RPC server connection.");
         allow_claim_failure(true);
-        UHD_LOGGER_INFO("MPMD") << "Rebooting MPM before device initialization!";
-        auto id = rpc->request_with_token<int>("get_device_id");
-        rpc->notify_with_token(MPMD_DEFAULT_REBOOT_TIMEOUT, "reset_timer_and_mgr");
+        UHD_LOGGER_INFO(_log_id) << "Rebooting MPM before device initialization!";
+        int id = rpc->get_device_id();
+        {
+            [[maybe_unused]] auto timeout_scope =
+                rpc->set_scope_timeout(MPMD_DEFAULT_REBOOT_TIMEOUT);
+            rpc->reset_timer_and_mgr();
+        }
         allow_claim_failure(false);
         reset_claim_loop();
-        rpc->notify_with_token("set_device_id", id);
+        rpc->set_device_id(id);
         init_device(rpc, mb_args);
     }
     mb_iface->init();
@@ -362,7 +376,7 @@ uhd::rfnoc::mb_iface& mpmd_mboard_impl::get_mb_iface()
 bool mpmd_mboard_impl::claim()
 {
     try {
-        auto result = _claim_rpc->request_with_token<bool>("reclaim");
+        auto result = _claim_rpc->reclaim();
         // When _allow_claim_failure_flag goes from true to false, we still have
         // to wait for a successful reclaim before we can also set
         // _allow_claim_failure_latch to false, because we have no way of
@@ -376,9 +390,9 @@ bool mpmd_mboard_impl::claim()
         // Note: Any RPC error will raise a uhd::runtime_error. Other errors are
         // not handled here.
         if (_allow_claim_failure_latch) {
-            UHD_LOG_DEBUG("MPMD", ex.what());
+            UHD_LOG_DEBUG(_log_id, ex.what());
         } else {
-            UHD_LOG_WARNING("MPMD", ex.what());
+            UHD_LOG_WARNING(_log_id, ex.what());
         }
         return _allow_claim_failure_latch;
     }
@@ -390,12 +404,16 @@ uhd::task::sptr mpmd_mboard_impl::make_claim_loop_task()
         [this] {
             auto now = std::chrono::steady_clock::now();
             if (not this->claim()) {
-                throw uhd::value_error("mpmd device reclaiming loop failed!");
+                UHD_LOG_THROW(uhd::value_error,
+                    _log_id,
+                    "Claimer task (rpc_client #"
+                        << _claim_rpc->get_client_id()
+                        << ") failed to reclaim device; exiting claim loop!");
             } else {
                 try {
                     this->dump_logs();
                 } catch (const uhd::runtime_error&) {
-                    UHD_LOG_WARNING("MPMD", "Could not read back log queue!");
+                    UHD_LOG_WARNING(_log_id, "Could not read back log queue!");
                 }
             }
             std::this_thread::sleep_until(
@@ -406,22 +424,26 @@ uhd::task::sptr mpmd_mboard_impl::make_claim_loop_task()
 
 uhd::task::sptr mpmd_mboard_impl::claim_device_and_make_task()
 {
-    auto rpc_token = _claim_rpc->request<std::string>(
-        "claim", mb_args.get("session_id", MPMD_DEFAULT_SESSION_ID));
+    const std::string rpc_token =
+        _claim_rpc->claim(mb_args.get("session_id", MPMD_DEFAULT_SESSION_ID));
     if (rpc_token.empty()) {
         throw uhd::value_error("mpmd device claiming failed!");
     }
-    UHD_LOG_TRACE("MPMD", "Received claim token " << rpc_token);
+    UHD_LOG_TRACE(_log_id, "Received claim token (length=" << rpc_token.size() << ")");
     // Save token for both RPC clients
     _claim_rpc->set_token(rpc_token);
     rpc->set_token(rpc_token);
     _token = rpc_token;
+    UHD_LOG_DEBUG(_log_id,
+        "Claim established: claimer rpc_client #" << _claim_rpc->get_client_id()
+                                                  << ", main rpc_client #"
+                                                  << rpc->get_client_id());
     // Optionally clear log buf
     if (mb_args.has_key("skip_oldlog")) {
         try {
             this->dump_logs(true);
         } catch (const uhd::runtime_error&) {
-            UHD_LOG_WARNING("MPMD", "Could not read back log queue!");
+            UHD_LOG_WARNING(_log_id, "Could not read back log queue!");
         }
     }
     return make_claim_loop_task();
@@ -434,6 +456,8 @@ void mpmd_mboard_impl::reset_claim_loop()
     _claimer_task.reset();
     _claim_rpc = make_mpm_rpc_client(_rpc_server_addr, mb_args, MPMD_CLAIMER_RPC_TIMEOUT);
     _claim_rpc->set_token(_token);
+    UHD_LOG_DEBUG(_log_id,
+        "Reset claim loop: new claimer rpc_client #" << _claim_rpc->get_client_id());
     _claimer_task = make_claim_loop_task();
 }
 
@@ -442,9 +466,9 @@ void mpmd_mboard_impl::dump_logs(const bool dump_to_null)
     // We need to use _claim_rpc instead of rpc because this currently only
     // gets called in the claimer loop.
     if (dump_to_null) {
-        _claim_rpc->request_with_token<log_buf_t>("get_log_buf");
+        _claim_rpc->get_log_buf();
     } else {
-        forward_logs(_claim_rpc->request_with_token<log_buf_t>("get_log_buf"));
+        forward_logs(_claim_rpc->get_log_buf(), _mb_index);
     }
 }
 
@@ -453,10 +477,10 @@ void mpmd_mboard_impl::dump_logs(const bool dump_to_null)
  * Factory
  ****************************************************************************/
 mpmd_mboard_impl::uptr mpmd_mboard_impl::make(
-    const uhd::device_addr_t& mb_args, const std::string& addr)
+    const uhd::device_addr_t& mb_args, const std::string& addr, const size_t mb_idx)
 {
     mpmd_mboard_impl::uptr mb =
-        mpmd_mboard_impl::uptr(new mpmd_mboard_impl(mb_args, addr));
+        mpmd_mboard_impl::uptr(new mpmd_mboard_impl(mb_args, addr, mb_idx));
     // implicit move
     return mb;
 }

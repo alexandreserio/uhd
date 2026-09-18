@@ -10,16 +10,21 @@
 #include <uhd/types/serial.hpp>
 #include <uhd/types/wb_iface.hpp>
 #include <uhd/utils/noncopyable.hpp>
-#include <uhdlib/usrp/cores/gpio_port_mapper.hpp>
 #include <functional>
 #include <memory>
 
 namespace uhd { namespace cores {
+// There are two ports, each with 12 user-configurable pins (GPIO0: [0..11], GPIO1:
+// [12..23])
+constexpr size_t NUM_PINS_PER_PORT = 12;
+
+// In the FPGA register map, Port B pin indices start at 16 (not 12)
+constexpr size_t PORT_NUMBER_OFFSET = 16;
+
 class spi_core_4000 : uhd::noncopyable, public uhd::spi_iface
 {
 public:
     using sptr        = std::shared_ptr<spi_core_4000>;
-    using mapper_sptr = std::shared_ptr<uhd::mapper::gpio_port_mapper>;
     using poke32_fn_t = std::function<void(uint32_t, uint32_t)>;
     using peek32_fn_t = std::function<uint32_t(uint32_t)>;
 
@@ -35,8 +40,7 @@ public:
         const size_t spi_transaction_cfg,
         const size_t spi_transaction_go,
         const size_t spi_status,
-        const size_t spi_controller_info,
-        const mapper_sptr port_mapper);
+        const size_t spi_controller_info);
 
     //! Configures the SPI transaction. The vector index refers to the peripheral number.
     virtual void set_spi_periph_config(

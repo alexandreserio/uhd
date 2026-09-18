@@ -4,7 +4,7 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-"""Run device tests for the x4x0 series."""
+"""Run device tests for the x410."""
 
 # pylint: disable=wrong-import-position
 # pylint: disable=unused-import
@@ -131,3 +131,4 @@ from list_sensors_test import ListSensorsTest
 from python_api_test import UhdPythonApiTest
 from rx_multi_spc_timed_commands_test import RxMultiSpcTimedCommandsTest
 from tx_multi_spc_timed_commands_test import TxMultiSpcTimedCommandsTest
+from ref_clk_calibration_test import RefClkCalibrationTest

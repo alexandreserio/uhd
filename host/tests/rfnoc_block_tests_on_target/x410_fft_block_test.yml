@@ -109,11 +109,13 @@ connections:
   - { srcblk: ep5,      srcport: out0,  dstblk: fft1,     dstport: in_1   }
   - { srcblk: fft1,     srcport: out_0, dstblk: ep6,      dstport: in0    }
   - { srcblk: fft1,     srcport: out_1, dstblk: ep7,      dstport: in0    }
+  - { srcblk: _device_, srcport: _none_, dstblk: _device_, dstport: gpio0 }
+  - { srcblk: _device_, srcport: _none_, dstblk: _device_, dstport: gpio1 }
 
 # A list of all clock domain connections in design
 # ------------------------------------------------
 # Format: A list of connection maps (list of key-value pairs) with the following keys
-#   - srcblk  = Source block to connect (Always "_device"_)
+#   - srcblk  = Source block to connect (Always "_device_")
 #   - srcport = Clock domain on the source block to connect
 #   - dstblk  = Destination block to connect
 #   - dstport = Clock domain on the destination block to connect

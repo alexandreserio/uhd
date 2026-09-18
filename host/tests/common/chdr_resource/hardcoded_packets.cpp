@@ -20,11 +20,13 @@ chdr_util::chdr_packet make_control_packet0()
 {
     auto header = chdr_rfnoc::chdr_header();
     header.set_pkt_type(chdr_rfnoc::PKT_TYPE_CTRL);
-    header.set_length(24);
+    header.set_length(20);
     header.set_dst_epid(2);
     auto payload     = chdr_rfnoc::ctrl_payload();
     payload.src_epid = 1;
-    payload.data_vtr = {0};
+    payload.data_vtr = {};
+    payload.num_data = 0;
+    payload.req_size = 1;
     payload.op_code  = chdr_rfnoc::OP_READ;
     return chdr_util::chdr_packet(CHDR_W, header, payload);
 }
@@ -39,6 +41,8 @@ chdr_util::chdr_packet make_control_packet1()
     payload.src_epid = 2;
     payload.is_ack   = true;
     payload.data_vtr = {0x12C60100};
+    payload.num_data = 1;
+    payload.req_size = 1;
     payload.op_code  = chdr_rfnoc::OP_READ;
     return chdr_util::chdr_packet(CHDR_W, header, payload);
 }
@@ -173,7 +177,7 @@ chdr_util::chdr_packet make_data_packet0()
     header.set_length(8000);
     header.set_dst_epid(3);
     header.set_seq_num(1);
-    boost::optional<uint64_t> timestamp(0x7C40C83);
+    std::optional<uint64_t> timestamp(0x7C40C83);
     uint8_t* data_src;
     size_t data_len;
     std::tie(data_src, data_len) = data_packet::peer1[9];
@@ -190,7 +194,7 @@ chdr_util::chdr_packet make_data_packet1()
     header.set_dst_epid(3);
     header.set_eob(true);
     header.set_seq_num(1716);
-    boost::optional<uint64_t> timestamp(0x21452B97);
+    std::optional<uint64_t> timestamp(0x21452B97);
     uint8_t* data_src;
     size_t data_len;
     std::tie(data_src, data_len) = data_packet::eob_packet_data;

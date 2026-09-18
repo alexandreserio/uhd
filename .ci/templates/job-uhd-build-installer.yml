@@ -28,6 +28,9 @@ parameters:
   values:
   - 'Internal'
   - 'files.ettus.com (Public)'
+- name: create_sbom
+  type: boolean
+  default: true
 
 jobs:
 - job: build_uhd_installer_${{ parameters.toolset }}
@@ -38,15 +41,29 @@ jobs:
   ${{ else }}:
     timeoutInMinutes: 120
   variables:
+    # Need to use list format to support inclusion of variable groups.
+    # Variable group used by .ci/templates/steps-windows-sbom.yml@ettus-rts 
+    - group: meta-ettus-vars
+    # Variable group needed for code signing (signtool-p4-path)
+    - ${{ if eq(parameters.toolset, 'msbuild') }}:
+      - group: sdr-pipeline-vars
     # Docker vars from job-get-latest-uhd-docker.yml
-    dockerBuildNumber: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerBuildNumber'] ]
-    dockerImagePrefix: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImagePrefix'] ]
-    dockerImageMatrixLin: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixLin'] ]
-    dockerImageMatrixWin: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixWin'] ]
-    dockerImageMatrixUbuntuDeb: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixUbuntuDeb'] ]
-    macOSBuilders: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.macOSBuilders'] ]
-    dockerImageMatrixSourcePackageBuilders: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixSourcePackageBuilders'] ]
-    dockerImageMatrixFedoraRpm: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixFedoraRpm'] ]
+    - name: dockerBuildNumber
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerBuildNumber'] ]
+    - name: dockerImagePrefix
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImagePrefix'] ]
+    - name: dockerImageMatrixLin
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixLin'] ]
+    - name: dockerImageMatrixWin
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixWin'] ]
+    - name: dockerImageMatrixUbuntuDeb
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixUbuntuDeb'] ]
+    - name: macOSBuilders
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.macOSBuilders'] ]
+    - name: dockerImageMatrixSourcePackageBuilders
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixSourcePackageBuilders'] ]
+    - name: dockerImageMatrixFedoraRpm
+      value: $[ dependencies.get_latest_uhd_docker.outputs['setDockerVar.dockerImageMatrixFedoraRpm'] ]
   pool:
     name: Drivers-NIBuildFarm-RFMIBUILD
     demands:
@@ -82,32 +99,78 @@ jobs:
       #pbuilder requires access to /proc
       options: --privileged
   steps:
+  # Job uses template which causes self checkout to result in different values
+  # for $(Build.SourcesDirectory) due to single vs multiple repositories use.
+  # Switching to use manual path definition $(Pipeline.Workspace)/s/<RepoName>
+  # for consistent behavior to avoid 
+  # $(Pipeline.Workspace)/s vs $(Pipeline.Workspace)/s/<RepoName>).
+  # Custom path now includes <RepoName>, which is now hardcoded, rather than 
+  # use name from git repo (avoids problem when building from public uhd repo).
+  # Checkout path needs to be defined relative to $(Pipeline.Workspace).
   - checkout: self
     clean: true
+    path: 's/uhddev'
+  # Need to use OS specific steps because predefined variable
+  # (i.e. $(Pipeline.Workspace) on Linux is treated as runtime shell expansion,
+  # but actually handled by Azure and the quotes ensure correct, delayed variable
+  # expansion. On Windows variables are exanded before script runs, and
+  # using quotes results in leading or trailing quotes in the variable value.
+  - script: |
+      echo "##vso[task.setvariable variable=uhdSrcDir]$(Pipeline.Workspace)/s/uhddev"
+    condition: eq( variables['Agent.OS'], 'Linux' )
+    displayName: 'Define uhdSrcDir variable (Linux)'
+  - script: |
+      echo ##vso[task.setvariable variable=uhdSrcDir]$(Pipeline.Workspace)\s\uhddev
+    condition: eq( variables['Agent.OS'], 'Windows_NT' )
+    displayName: 'Define uhdSrcDir variable (Windows)'
+
 
   - download: uhd_build_docker_container
+  - template: .ci/templates/steps-setup.yml@ettus-rts
   - ${{ if eq(parameters.toolset, 'fedora_rpm') }}:
     - template: steps-build-uhd-installer-fedora-rpm.yml
       parameters:
-        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdSrcDir: $(uhdSrcDir)
         uhdBuildDir: $(Build.BinariesDirectory)/uhddev/build
         uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
         fedoraReleaseName: $(fedoraReleaseName)
         releaseBinaries: ${{ parameters.releaseBinaries }}
         cmake_args: ${{ parameters.cmake_args }}
+    - ${{ if parameters.create_sbom }}:
+      - template: .ci/templates/steps-linux-sbom.yml@ettus-rts
+        parameters:
+          toolset: ${{ parameters.toolset }} 
+          installer: ${{ parameters.installer }}
+          sbomComponentList: 'uhd libuhd libboost libusb'
+          buildOSName: $(buildOSName)
+          osReleaseName: $(fedoraReleaseName)
+          uhdSrcDir: $(uhdSrcDir)
+          uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
+          releaseBinaries: ${{ parameters.releaseBinaries }}
   - ${{ if eq(parameters.toolset, 'ubuntu_deb') }}:
     - template: steps-build-uhd-installer-ubuntu-deb.yml
       parameters:
-        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdSrcDir: $(uhdSrcDir)
         uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
         ubuntuReleaseName: $(ubuntuReleaseName)
         cmake_args: ${{ parameters.cmake_args }}
+    - ${{ if parameters.create_sbom }}:
+      - template: .ci/templates/steps-linux-sbom.yml@ettus-rts
+        parameters:
+          toolset: ${{ parameters.toolset }} 
+          installer: ${{ parameters.installer }}
+          sbomComponentList: 'uhd libuhd'
+          buildOSName: $(buildOSName)
+          osReleaseName: $(ubuntuReleaseName)
+          uhdSrcDir: $(uhdSrcDir)
+          uhdInstallerDir: $(Build.BinariesDirectory)/uhddev-installer
+          releaseBinaries: ${{ parameters.releaseBinaries }}
   - ${{ if and(eq(parameters.toolset, 'msbuild'), eq(parameters.installer, 'nsis')) }}:
     - template: steps-build-uhd-installer-msbuild-nsis.yml
       parameters:
-        uhdSrcDir: $(Build.SourcesDirectory)
+        uhdSrcDir: $(uhdSrcDir)
         uhdBuildDir: c:\uhddev\build
-        uhdInstallerDir: c:\uhddev-installer
+        uhdInstallerDir: $(Build.BinariesDirectory)\uhddev-installer
         uhdImageDir: c:\uhd-images
         uhdVcpkgManifestDir: c:\uhd-vcpkg
         uhdReleaseBinaries: ${{ parameters.releaseBinaries }}
@@ -120,6 +183,19 @@ jobs:
         vsYear: $(vsYear)
         cleanTargetFolder: False
         cmake_args: ${{ parameters.cmake_args }}
+    - ${{ if parameters.create_sbom }}:
+      - template: .ci/templates/steps-windows-sbom.yml@ettus-rts
+        parameters:
+          sbomComponentList: ''
+          buildOSName: $(buildOSName)
+          uhdSrcDir: $(uhdSrcDir)
+          uhdInstallerDir: $(Build.BinariesDirectory)\uhddev-installer
+          uhdBuildDir: c:\uhddev\build
+          uhdVcpkgManifestDir: c:\uhd-vcpkg
+          releaseBinaries: ${{ parameters.releaseBinaries }}
+          uhdBuildPythonAPI: True
+          vsArch: $(vsArch)
+          vsYear: $(vsYear)
   - task: PublishPipelineArtifact@1
     inputs:
       targetPath: '$(Build.BinariesDirectory)/uhddev-installer'

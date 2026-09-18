@@ -67,17 +67,18 @@ constexpr double RX_SIGN            = +1.0;
 constexpr double TX_SIGN            = -1.0;
 constexpr char LOG_ID[]             = "MULTI_USRP";
 
-//! A faux container for a UHD device
-//
-// Note that multi_usrp_rfnoc no longer gives access to the underlying device
-// class. Legacy code might use multi_usrp->get_device()->get_tree() or
-// similar functionalities; these can be faked with this redirector class.
-//
-// The only exception is recv_async_msg(), which depends on the streamer. It
-// will print a warning once, and will attempt to access a Tx streamer if it
-// has access to a Tx streamer. If there is only ever one Tx streamer, this will
-// work as expected. For multiple streamers, only the last streamer's async
-// messages will make it through.
+/*! \brief A faux container for a UHD device.
+ *
+ * Note that multi_usrp_rfnoc no longer gives access to the underlying device
+ * class. Legacy code might use multi_usrp->get_device()->get_tree() or
+ * similar functionalities; these can be faked with this redirector class.
+ *
+ * The only exception is recv_async_msg(), which depends on the streamer. It
+ * will print a warning once, and will attempt to access a Tx streamer if it
+ * has access to a Tx streamer. If there is only ever one Tx streamer, this will
+ * work as expected. For multiple streamers, only the last streamer's async
+ * messages will make it through.
+ */
 class redirector_device : public uhd::device
 {
 public:
@@ -1300,6 +1301,11 @@ public:
         return _rx_chans.size();
     }
 
+    size_t get_rx_radio_channel(size_t chan = 0) override
+    {
+        return _get_rx_chan(chan).block_chan;
+    }
+
     std::string get_rx_subdev_name(size_t chan = 0) override
     {
         auto rx_chain = _get_rx_chan(chan);
@@ -1980,6 +1986,11 @@ public:
         return _tx_chans.size();
     }
 
+    size_t get_tx_radio_channel(size_t chan = 0) override
+    {
+        return _get_tx_chan(chan).block_chan;
+    }
+
     std::string get_tx_subdev_name(size_t chan = 0) override
     {
         auto tx_chain = _get_tx_chan(chan);
@@ -2318,10 +2329,10 @@ public:
                                      + " to a radio block controller.");
         }();
 
-        const std::string normalized_bank = [radio, bank]() {
+        const std::string normalized_bank = [radio, bank, slot_name]() {
             auto radio_banks = radio->get_gpio_banks();
             for (auto& radio_bank : radio_banks) {
-                if (bank.find(radio_bank) == 0) {
+                if (radio_bank + slot_name == bank) {
                     return radio_bank;
                 }
             }
@@ -2850,9 +2861,10 @@ private:
     property_tree::sptr _tree;
     //! Mapping between device number and the radio blocks
     std::unordered_map<size_t, std::vector<uhd::rfnoc::radio_control::sptr>> _radios;
-    //! Mapping between channel number and the RFNoC blocks in that RX chain
-    // Using map instead of unordered map to have a guaranteed order when iterating over
-    // it, e.g. for getting the master clock rate.
+    /*! Mapping between channel number and the RFNoC blocks in that RX chain
+     * Using map instead of unordered map to have a guaranteed order when iterating over
+     * it, e.g. for getting the master clock rate.
+     */
     std::map<size_t, rx_chan_t> _rx_chans;
     //! Mapping between channel number and the RFNoC blocks in that TX chain
     std::map<size_t, tx_chan_t> _tx_chans;

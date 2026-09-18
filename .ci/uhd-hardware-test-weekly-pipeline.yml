@@ -12,12 +12,12 @@ pr: none
 parameters:
 - name: fpga_imgs_source
   type: string
+  displayName: FPGA Images Source
   values:
   - 'Filesystem/Images Downloader'
   - 'Mono Pipeline'
   - 'Mono Pipeline PR'
   - 'FPGA Pipeline'
-  displayName: FPGA Images Source
   default: 'Mono Pipeline'
 - name: testLength
   type: string
@@ -26,6 +26,10 @@ parameters:
   - 'full'
   - 'stress'
   default: 'smoke'
+- name: selected_streaming_tests
+  type: string
+  displayName: Streaming Tests Multi-Select (comma-separated)
+  default: 'B206,B210,X310_XG,X410_CG_400,X410_UC_200,X440_CG_400,X440_CG_1600'
 
 variables:
 - name: uhdFpgaArtifactSource
@@ -51,7 +55,7 @@ resources:
     branch: master
   - pipeline: usrp-kas-pipeline
     source: 'usrp-kas'
-    branch: kirkstone
+    branch: scarthgap
   # Keep this for now, but it should be removed once the mono pipeline is
   # fully populated.
   - pipeline: uhd_fpga_pipeline
@@ -62,7 +66,7 @@ resources:
     type: github
     name: EttusResearch/meta-ettus-dev
     endpoint: EttusResearch
-    ref: kirkstone
+    ref: scarthgap
   - repository: gr-ettus
     type: github
     name: EttusResearch/gr-ettusdev
@@ -73,11 +77,6 @@ resources:
     endpoint: EttusResearch
     name: EttusResearch/ettus-rts
     ref: master
-  - repository: hwtools
-    type: git
-    ref: refs/tags/pip/hwsetup/0.1/0.1.3
-    name: DevCentral/hwtools
-
 stages:
 - stage: test_uhd_devtest_stage
   displayName: Test UHD Devtest
@@ -104,18 +103,13 @@ stages:
   displayName: Test UHD Streaming
   dependsOn: []
   jobs:
-  - template: templates/job-uhd-streaming-tests-beauty.yml
+  - template: templates/job-uhd-streaming-tests.yml
     parameters:
       uhdSrcDir: $(Build.SourcesDirectory)/uhddev
       uhdArtifactSource: uhd_mono_pipeline
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       testLength: ${{ parameters.testLength }}
-  - template: templates/job-uhd-streaming-tests-x440.yml
-    parameters:
-      uhdSrcDir: $(Build.SourcesDirectory)/uhddev
-      uhdArtifactSource: uhd_mono_pipeline
-      uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
-      testLength: ${{ parameters.testLength }}
+      selectedTests: ${{ split(replace(parameters.selected_streaming_tests, ' ', ''), ',') }}
 
 - stage: test_rf_tests_stage
   displayName: Test UHD RF Tests
@@ -132,6 +126,7 @@ stages:
       uhdArtifactSource: uhd_mono_pipeline
       uhdFpgaArtifactSource: ${{ variables.uhdFpgaArtifactSource }}
       fpga_imgs_source: ${{ variables.fpga_imgs_source }}
+      runX410X4400RfSubset: true
       testLength: ${{ parameters.testLength }}
   - template: templates/tests/job-uhd-x440-hardware-tests-pebbles.yml
     parameters:

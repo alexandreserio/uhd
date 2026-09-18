@@ -13,7 +13,6 @@ from collections import namedtuple
 from os import path
 from time import sleep
 
-from usrp_mpm import lib  # Pulls in everything from C++-land
 from usrp_mpm import tlv_eeprom
 from usrp_mpm.compat_num import CompatNumber
 from usrp_mpm.components import ZynqComponents
@@ -30,16 +29,17 @@ from usrp_mpm.periph_manager.x4xx_periphs import (
     CtrlportRegs,
     MboardRegsControl,
     QSFPModule,
-    get_temp_sensor,
+    get_temp_sensors,
 )
-from usrp_mpm.periph_manager.x4xx_rfdc_ctrl import X4xxRfdcCtrl
+from usrp_mpm.periph_manager.x4xx_rfdc_ctrl import MixerMode, X4xxRfdcCtrl
 from usrp_mpm.rpc_utils import no_claim, no_rpc
-from usrp_mpm.sys_utils import dtoverlay, ectool, i2c_dev
+from usrp_mpm.sys_utils import dtoverlay, ectool
 from usrp_mpm.sys_utils.gpio import Gpio
+from usrp_mpm.sys_utils.sysfs_hwmon import HwmonTempSensors
 from usrp_mpm.sys_utils.udev import dt_symbol_get_spidev
 from usrp_mpm.xports import XportMgrUDP
 
-X400_FPGA_COMPAT = (10, 0)
+X400_FPGA_COMPAT = (11, 0)
 # The compat number at which remote streaming was added:
 X400_REMOTE_STREAMING_COMPAT = (7, 9)
 # The compat number at which DNA support was added:
@@ -94,6 +94,7 @@ class EepromTagMap:
 ###############################################################################
 class X400XportMgrUDP(XportMgrUDP):
     "X400-specific UDP configuration"
+
     iface_config = {
         "sfp0": {
             "label": "misc-enet-regs0",
@@ -155,7 +156,14 @@ class x4xx(ZynqComponents, PeriphManagerBase):
     # See PeriphManagerBase for documentation on these fields. We try and keep
     # them in the same order as they are in PeriphManagerBase for easier lookup.
     #########################################################################
-    pids = {0x0410: "x410", 0x0440: "x440"}
+    pids = {
+        0x0410: "x410",
+        0x0420: "x420",
+        0x0440: "x440",
+        0x7410: "x410",
+        0x7420: "x420",
+        0x7440: "x440",
+    }
     description = "X400-Series Device"
     eeprom_search = PeriphManagerBase._EepromSearch.SYMBOL
     # This is not in the overridables section from PeriphManagerBase, but we use
@@ -172,6 +180,7 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         # GPS sensors, but they get added during __init__() only when there is
         # a GPS available.
         "ref_locked": "get_ref_lock_sensor",
+        "ref_stable": "get_ref_stable_sensor",
         "fan0": "get_fan0_sensor",
         "fan1": "get_fan1_sensor",
         "temp_fpga": "get_fpga_temp_sensor",
@@ -206,6 +215,7 @@ class x4xx(ZynqComponents, PeriphManagerBase):
                     "oldest": (1, 0),
                 },
             },
+            "supported_file_extensions": ["bit", "bin"],
         },
         "dts": {
             "callback": "update_dts",
@@ -215,6 +225,8 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         },
     }
     discoverable_features = ["ref_clk_calibration", "time_export", "trig_io_mode", "gpio_power"]
+    bootgen_arch = "zynqmp"
+    handle_bootgen_bin_files = True
     #
     # End of overridables from PeriphManagerBase
     ###########################################################################
@@ -234,6 +246,10 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         # Then add X4xx-specific information
         mb_pid = eeprom_md.get("pid")
         device_info["product"] = cls.pids.get(mb_pid, "unknown")
+        if (mb_pid & 0xF000) == 0x7000:
+            device_info["locked_fpga"] = True
+        else:
+            device_info["locked_fpga"] = False
         module_serial = eeprom_md.get("module_serial")
         if module_serial is not None:
             device_info["serial"] = module_serial
@@ -269,6 +285,11 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         # Need to wait here a second to make sure the ethernet interfaces are up
         # TODO: Fine-tune this number, or wait for some smarter signal.
         sleep(1)
+        fpga_state = self.fpga_manager.get_state()
+        if fpga_state != "operating":
+            msg = f'Failed to apply overlays {requested_overlays}, FPGA is in state "{fpga_state}"'
+            self.log.error(msg)
+            raise RuntimeError(msg)
 
     ###########################################################################
     # Ctor and device initialization tasks
@@ -289,6 +310,10 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         try:
             self._init_peripherals(args)
             self.init_dboards(args)
+            # We finish initializing the tiles after the daughterboard has powered up
+            # so the foreground cal can work while the DB is in a defined state and we
+            # can expect the ADC input level to be as low as possible.
+            self.clk_mgr.restart_tiles()
             # We need to init dio_control separately from peripherals
             # since it needs information about available dboards
             self._init_dio_control(args)
@@ -310,8 +335,11 @@ class x4xx(ZynqComponents, PeriphManagerBase):
             self.log.warning("Failed to initialize device on boot: %s", str(ex))
 
         # Freeze the RFDC calibration by default
-        self.rfdc.set_cal_frozen(1, 1, "all")
-        self.rfdc.set_cal_frozen(1, 0, "all")
+        self.rfdc.set_cal_frozen(1, 1, "all", MixerMode.ALL)
+        self.rfdc.set_cal_frozen(1, 0, "all", MixerMode.ALL)
+
+        self._temp_fan_sensors = get_temp_sensors(log=self.log)
+        self._hwmon_based_sensors = isinstance(self._temp_fan_sensors, HwmonTempSensors)
 
     # The parent class versions of these functions require access to self, but
     # these versions don't.
@@ -498,13 +526,17 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         )
 
         self._update_fpga_type()
+        self._update_fpga_supported_file_extensions()
 
         # Now that we have applied the overlay, we can query the FPGA
         # capabilities. This will allow us to figure out a good default MCR,
         # and we set that. Remember that earlier, when we turned on the clocks,
         # we just picked any valid clock rate so we would be able to communicate
-        # with all the devices. After this call, all clocks will be set to useful
-        # and valid values.
+        # with all the devices. After this call, all clocks except for the RFDC
+        # will be set to useful and valid values. The RFDC tiles will be started
+        # afterwards to provide a stable daughterboard state while the ADCs are
+        # running their foreground calibrations which is part of their
+        # initialization.
         self.clk_mgr.finalize_init(args, self.mboard_regs_control, self.rfdc)
 
         # Init ctrlport endpoint
@@ -680,6 +712,7 @@ class x4xx(ZynqComponents, PeriphManagerBase):
     ###########################################################################
     # Device info
     ###########################################################################
+    @no_claim
     def get_device_info_dyn(self):
         """
         Append the device info with current IP addresses.
@@ -698,11 +731,12 @@ class x4xx(ZynqComponents, PeriphManagerBase):
             device_info.update({"device_dna": self._device_dna})
         return device_info
 
-    def is_db_gpio_ifc_present(self, slot_id):
+    @no_claim
+    def is_db_gpio_ifc_present(self, db_idx):
         """
-        Return if daughterboard GPIO interface at 'slot_id' is present in the FPGA
+        Return if daughterboard GPIO interface at 'db_idx' is present in the FPGA
         """
-        db_gpio_version = self.mboard_regs_control.get_db_gpio_ifc_version(slot_id)
+        db_gpio_version = self.mboard_regs_control.get_db_gpio_ifc_version(db_idx)
         return db_gpio_version[0] > 0
 
     ###########################################################################
@@ -779,6 +813,13 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         )
         self.log.debug("Updating mboard FPGA type info to {}".format(fpga_string))
         self.updateable_components["fpga"]["type"] = fpga_string
+
+    @no_rpc
+    def _update_fpga_supported_file_extensions(self):
+        """Update the fpga type stored in the updateable components"""
+        if self.device_info["locked_fpga"]:
+            # only bin files generated by bootgen with authenticated FPGA partition are supported
+            self.updateable_components["fpga"]["supported_file_extensions"] = ["bin"]
 
     ###########################################################################
     # GPIO API
@@ -982,17 +1023,17 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         """Poke the MB CPLD"""
         self.mboard_regs_control.poke32(addr, val)
 
-    def peek_db(self, db_id, addr):
+    def peek_db(self, db_idx, addr):
         """Peek the DB CPLD, even if the DB is not discovered by MPM"""
-        assert db_id in (0, 1)
-        self.cpld_control.enable_daughterboard(db_id)
-        return "0x{:X}".format(self.ctrlport_regs.get_db_cpld_iface(db_id).peek32(addr))
+        assert db_idx in (0, 1)
+        self.cpld_control.enable_daughterboard(db_idx)
+        return "0x{:X}".format(self.ctrlport_regs.get_db_cpld_iface(db_idx).peek32(addr))
 
-    def poke_db(self, db_id, addr, val):
+    def poke_db(self, db_idx, addr, val):
         """Poke the DB CPLD, even if the DB is not discovered by MPM"""
-        assert db_id in (0, 1)
-        self.cpld_control.enable_daughterboard(db_id)
-        self.ctrlport_regs.get_db_cpld_iface(db_id).poke32(addr, val)
+        assert db_idx in (0, 1)
+        self.cpld_control.enable_daughterboard(db_idx)
+        self.ctrlport_regs.get_db_cpld_iface(db_idx).poke32(addr, val)
 
     def peek_clkaux(self, addr):
         """Peek the ClkAux DB over SPI"""
@@ -1014,9 +1055,9 @@ class x4xx(ZynqComponents, PeriphManagerBase):
     # Sensors
     ###########################################################################
     def get_ref_lock_sensor(self):
-        """
-        Return main refclock lock status. This is the lock status of the
-        reference and sample PLLs.
+        """Return main refclock lock status.
+
+        This is the current, combined lock status of the reference and sample PLLs.
         """
         lock_status = self.clk_mgr.clk_ctrl.get_ref_locked()
         return {
@@ -1026,10 +1067,25 @@ class x4xx(ZynqComponents, PeriphManagerBase):
             "value": str(lock_status).lower(),
         }
 
+    def get_ref_stable_sensor(self):
+        """Return refclock stable lock status.
+
+        This checks both current lock status and the sticky lock-detect-lost
+        bits in the LMK04832 sample PLL. If a lock loss has occurred since the
+        last query, the sticky bits are cleared after detection.
+        """
+        stable = self.clk_mgr.clk_ctrl.get_ref_stable()
+        return {
+            "name": "ref_stable",
+            "type": "BOOLEAN",
+            "unit": "stable" if stable else "unstable",
+            "value": str(stable).lower(),
+        }
+
     def get_fpga_temp_sensor(self):
         """Get temperature sensor reading of the X4xx FPGA."""
         self.log.trace("Reading FPGA temperature.")
-        return get_temp_sensor(["RFSoC"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["RFSoC"])
 
     def get_main_power_temp_sensor0(self):
         """
@@ -1037,7 +1093,7 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         0.85V power supply to RFSoC.
         """
         self.log.trace("Reading PMBus 0 Power Supply Chip(s) temperature.")
-        return get_temp_sensor(["PMBUS-0"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["PMBUS-0"])
 
     def get_main_power_temp_sensor1(self):
         """
@@ -1045,43 +1101,46 @@ class x4xx(ZynqComponents, PeriphManagerBase):
         0.85V power supply to RFSoC.
         """
         self.log.trace("Reading PMBus 1 Power Supply Chip(s) temperature.")
-        return get_temp_sensor(["PMBUS-1"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["PMBUS-1"])
 
     def get_scu_internal_temp_sensor(self):
         """Get temperature sensor reading of STM32 SCU's internal sensor."""
         self.log.trace("Reading SCU internal temperature.")
-        return get_temp_sensor(["EC Internal"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["EC Internal"])
 
     def get_sample_clock_pcb_temp_sensor(self):
         """Get temperature sensor reading of the SPLL."""
         self.log.trace("Reading Sample Clock PCB temperature.")
-        return get_temp_sensor(["Sample Clock PCB"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["Sample Clock PCB"])
 
     def get_dram_pcb_temp_sensor(self):
         """Get temperature sensor reading of the DRAM."""
         self.log.trace("Reading DRAM PCB temperature.")
-        return get_temp_sensor(["DRAM PCB"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["DRAM PCB"])
 
     def get_tmp464_internal_temp_sensor(self):
         """Get temperature sensor reading of the internal TMP464 sensor."""
         self.log.trace("Reading TMP464 Internal temperature.")
-        return get_temp_sensor(["TMP464 Internal"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["TMP464 Internal"])
 
     def get_power_supply_pcb_temp_sensor(self):
         """Get temperature sensor reading of the Power Supply PCB sensor."""
         self.log.trace("Reading Power Supply PCB temperature.")
-        return get_temp_sensor(["Power Supply PCB"], log=self.log)
+        return self._temp_fan_sensors.read_thermal_sensor_value(["Power Supply PCB"])
 
     def _get_fan_sensor(self, fan="fan0"):
         """Get fan speed."""
-        self.log.trace("Reading {} speed sensor.".format(fan))
-        fan_rpm = -1
+        self.log.trace(f"Reading {fan} speed sensor.")
+        fan_rpm = str(-1)
         try:
-            fan_rpm_all = ectool.get_fan_rpm()
-            fan_rpm = fan_rpm_all[fan]
+            if not self._hwmon_based_sensors:
+                fan_rpm_all = ectool.get_fan_rpm()
+                fan_rpm = str(fan_rpm_all[fan])
+            else:
+                fan_rpm = self._temp_fan_sensors.read_fan_sensor_value(fan)["value"]
         except Exception as ex:
-            self.log.warning("Error occurred when getting {} speed value: {} ".format(fan, str(ex)))
-        return {"name": fan, "type": "INTEGER", "unit": "rpm", "value": str(fan_rpm)}
+            self.log.warning(f"Error occurred when getting {fan} speed value: {ex}")
+        return {"name": fan, "type": "INTEGER", "unit": "rpm", "value": fan_rpm}
 
     def get_fan0_sensor(self):
         """Get fan0 speed."""

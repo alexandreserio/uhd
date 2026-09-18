@@ -10,6 +10,7 @@ that is passed to the templates.
 
 import copy
 import logging
+import math
 import os
 import sys
 
@@ -39,6 +40,7 @@ class ImageBuilderConfig:
         """Initialize."""
         self.rfnoc_version = config.get("rfnoc_version", RFNOC_PROTO_VERSION)
         self.chdr_width = config["chdr_width"]
+        self.block_chdr_width = config.get("block_chdr_width", self.chdr_width)
         self.parameters = {}
         self.crossbar_routes = config.get("crossbar_routes", [])
         self.noc_blocks = {}
@@ -78,13 +80,15 @@ class ImageBuilderConfig:
         self._sort_modules()
         self._attach_defs(known_modules)
         self._update_sep_defaults()
+        self._calculate_uram_usage()
         self._check_deprecated_signatures()
         self._set_indices()
         self._resolve_parameters()
         self._collect_noc_ports()
         self._collect_io_ports()
-        self._collect_clocks()
+        self._collect_clocks_and_resets()
         connections.check_and_sanitize(self)
+        self._apply_block_chdr_widths()
         self._check_resets()
         self._check_clk_domains()
         self._annotate_modules()
@@ -197,9 +201,12 @@ class ImageBuilderConfig:
                     )
         # Also set parameters for the device
         default_params = getattr(self.device, "parameters", {})
+        # Pre-merge raw BSP defaults with user overrides so that BSP parameter
+        # expressions can reference other BSP parameters that are not explicitly
+        # overridden in the image core file (e.g. RADIO_NIPC depending on RESAMPLERS).
+        pre_merged = {**default_params, **{k: v for k, v in self.parameters.items() if k in default_params}}
         self.parameters = {
-            **{k: resolve(v, parameters=self.parameters, config=self) for k, v in default_params.items()},
-            **{k: resolve(v, parameters=self.parameters, config=self) for k, v in self.parameters.items() if k in default_params},
+            k: resolve(v, parameters=pre_merged, config=self) for k, v in pre_merged.items()
         }
         invalid_keys = [k for k in self.parameters if k not in default_params]
         if invalid_keys:
@@ -313,9 +320,6 @@ class ImageBuilderConfig:
                 requested_version,
             )
         self.rfnoc_version = RFNOC_PROTO_VERSION
-        # Give block_chdr_width a default value
-        if not hasattr(self, "block_chdr_width"):
-            self.block_chdr_width = self.chdr_width
         # Check crossbar_routes
         if hasattr(self.device, "transports") and len(self.transport_adapters) > 0:
             failures += [
@@ -636,6 +640,83 @@ class ImageBuilderConfig:
                 self.stream_endpoints[sep]["num_data_o"] = 1
             if "chdr_width" not in self.stream_endpoints[sep]:
                 self.stream_endpoints[sep]["chdr_width"] = self.chdr_width
+            self.stream_endpoints[sep].setdefault("block_chdr_width", self.block_chdr_width)
+
+    def _apply_block_chdr_widths(self):
+        """Apply each stream endpoint's CHDR width to its static subgraph."""
+        # Build an undirected graph of all static data connections. Direction
+        # does not matter because one width applies to the entire subgraph.
+        graph = {name: set() for name in self.stream_endpoints.keys() | self.noc_blocks.keys()}
+        for connection in self.connections:
+            if connection["srctype"] == "output":
+                srcblk = connection["srcblk"]
+                dstblk = connection["dstblk"]
+                graph[srcblk].add(dstblk)
+                graph[dstblk].add(srcblk)
+
+        # Walk the graph from each SEP and record its width on every reachable
+        # node. Reaching a node with a different width identifies a conflict.
+        widths = {}
+        for sep, sep_info in self.stream_endpoints.items():
+            width = sep_info["block_chdr_width"]
+            pending = [sep]
+            while pending:
+                block = pending.pop()
+                if block in widths:
+                    if widths[block] != width:
+                        self.log.error(
+                            "Conflicting block_chdr_width on block %s in subgraph containing %s",
+                            block, sep,
+                        )
+                        raise ValueError("The image core configuration is invalid.")
+                    continue
+                widths[block] = width
+                pending.extend(graph[block])
+
+        # Apply the inherited width to each NoC block. Disconnected blocks use
+        # the image default, as do all blocks inside the secure core.
+        for name, block in self.noc_blocks.items():
+            width = widths.get(name, self.block_chdr_width)
+            if block.get("domain") == "secure_core" and width != self.block_chdr_width:
+                self.log.error("Secure-core block %s cannot override block_chdr_width", name)
+                raise ValueError("The image core configuration is invalid.")
+            block["block_chdr_width"] = width
+
+    def _calculate_uram_usage(self):
+        # recalculate the total number of URAM blocks based on the
+        # family
+        if not (self.device.family == "ULTRASCALE"):
+            for sep in self.stream_endpoints:
+                self.stream_endpoints[sep]["max_num_uram_blocks"] = -1
+        else:
+            # in current devices the xczu28dr is the only Ultrascale
+            # device, which has 80 URAM blocks
+            remaining_uram_blocks = 80
+            uram_max_width = 72
+            uram_max_depth = 4096
+            # sort the requested number of bytes in descending order, so
+            # that we allocate the largest buffers first
+            sorted_seps = sorted(
+                self.stream_endpoints.items(),
+                key=lambda item: item[1].get("buff_size_bytes", 0),
+                reverse=True,
+            )
+            for _, sep in sorted_seps:
+                # each URAM block can hold 4096 word each 72 bit wide
+                number_of_bytes = sep.get("buff_size_bytes", 0)
+                # calculate the number of URAM blocks depending on the
+                # CHDR width (parallel memories to form a word)
+                number_of_uram_per_chdr_word = math.ceil(sep["chdr_width"] / uram_max_width)
+                # calculate the depth to achieve the requested buffer size in bytes
+                chdr_width_bytes = sep["chdr_width"] // 8
+                uram_depth = math.ceil(number_of_bytes / chdr_width_bytes / uram_max_depth)
+                # calculate the number of URAM blocks needed to hold the
+                # buffer
+                needed_uram_blocks = number_of_uram_per_chdr_word * uram_depth
+                allocated_uram_blocks = min(needed_uram_blocks, remaining_uram_blocks)
+                sep["max_num_uram_blocks"] = allocated_uram_blocks
+                remaining_uram_blocks -= allocated_uram_blocks
+
 
     def _set_indices(self):
         """Add an index for each port of each stream endpoint and noc block.
@@ -778,11 +859,13 @@ class ImageBuilderConfig:
             self.log.error("Error parsing IO ports for _device_: %s", str(ex))
             sys.exit(1)
 
-    def _collect_clocks(self):
-        """Create lookup table for clocks.
+    def _collect_clocks_and_resets(self):
+        """Create lookup table for clocks and sanitize clock/reset definitions.
 
-        The key is a combination of block name (_device_ for clocks of the bsp)
-        and the clock name (e.g., _device_.rfnoc_chdr, or ddc0.ce)
+        For clocks, the lookup table key is a combination of block name
+        (_device_ for clocks of the BSP) and the clock name
+        (e.g., _device_.rfnoc_chdr, or ddc0.ce). In addition, this function
+        normalizes the direction of clocks and resets to sensible defaults.
         """
         min_user_clock_index = 10
         clk_indices = {
@@ -809,22 +892,30 @@ class ImageBuilderConfig:
             clk_indices[clk_index] = clock_id
             return clk_index
 
-        # Go through clocks from device BSP
-        setattr(self.device, "clocks", getattr(self.device, "clocks", {}))
+        # Go through clocks from device BSP and ensure clocks/resets are present
+        setattr(self.device, "clocks", copy.deepcopy(getattr(self.device, "clocks", [])))
+        setattr(self.device, "resets", copy.deepcopy(getattr(self.device, "resets", [])))
+        for rst_name in self.DEFAULT_RST_NAMES:
+            self.device.resets.append({"name": rst_name, "direction": "out"})
         for clock in self.device.clocks:
             # Sanitize the direction field: BSP clocks are by default outputs
             if "direction" not in clock:
                 clock["direction"] = "out"
             clock["index"] = register_clk_index("_device_." + clock["name"], clock)
-        # Go through clocks from blocks, modules, and transport adapters
+        # Go through clocks and resets from blocks, modules, and transport adapters
         for name, block in self.get_module_list("nodevice").items():
-            setattr(block, "clocks", getattr(block.desc, "clocks", {}))
+            setattr(block, "clocks", copy.deepcopy(getattr(block.desc, "clocks", [])))
+            setattr(block, "resets", copy.deepcopy(getattr(block.desc, "resets", [])))
             for clock in block.clocks:
                 # Sanitize the direction field: Block clocks are by default inputs
                 if "direction" not in clock:
                     clock["direction"] = "in"
                 if clock["direction"] == "out":
                     clock["index"] = register_clk_index(name + "." + clock["name"], clock)
+            for reset in block.resets:
+                # Sanitize the direction field: Block resets are by default inputs
+                if "direction" not in reset:
+                    reset["direction"] = "in"
 
     def _check_clk_domains(self):
         """Check/sanitize clock domain connections.
@@ -969,28 +1060,23 @@ class ImageBuilderConfig:
         """
         # Go through resets defined directly in the YAML
         failure = ""
-        if not hasattr(self.device, "resets"):
-            setattr(self.device, "resets", [])
         for reset in self.resets:
             src, dst = reset["srcblk"], reset["dstblk"]
             srcport, dstport = reset["srcport"], reset["dstport"]
-            if src != DEVICE_NAME or src not in self.modules:
+            if src != DEVICE_NAME and src not in self.modules:
                 failure += f"Cannot connect reset! Unknown source: {src}\n"
                 continue
-            if dst != DEVICE_NAME or dst not in self.modules:
+            if dst != DEVICE_NAME and dst not in self.modules:
                 failure += f"Cannot connect reset! Unknown destination: {dst}\n"
                 continue
             src_module = self.device if src == DEVICE_NAME else self.modules[src]
             dst_module = self.device if dst == DEVICE_NAME else self.modules[dst]
-            if (
-                srcport not in src_module.resets
-                or src_module.resets[srcport].get("direction", "in") != "out"
-            ):
+            if all(r["name"] != srcport or r.get("direction", "in") != "out"
+                   for r in src_module.resets):
                 failure += f"Invalid reset source: {src}.{srcport}\n"
-            if (
-                dstport not in dst_module.resets
-                or dst_module.resets[srcport].get("direction", "in") != "in"
-            ):
+                failure += f"valid sources are: {src_module.resets}"
+            if all(r["name"] != dstport or r.get("direction", "in") != "in"
+                   for r in dst_module.resets):
                 failure += f"Invalid reset destination: {dst}.{dstport}\n"
         if failure:
             self.log.error("Invalid reset connections:")
@@ -998,23 +1084,23 @@ class ImageBuilderConfig:
             sys.exit(1)
         # Now see if there are resets that need auto-connecting
         for module_name, module in self.modules.items():
-            for reset in (r for r in module.desc.resets if r.get("direction", "in") == "in"):
+            for reset in (r for r in module.resets if r.get("direction", "in") == "in"):
                 if (
                     all(
-                        r["dstblk"] != module_name and r["dstport"] != reset["name"]
+                        r["dstblk"] != module_name or r["dstport"] != reset["name"]
                         for r in self.resets
                     )
                     and "default" in reset
                 ):
                     rst_src, rst_port = reset["default"].split(".", 2)
-                    self.resets.append(
-                        {
-                            "srcblk": rst_src,
-                            "srcport": rst_port,
-                            "dstblk": module_name,
-                            "dstport": reset["name"],
-                        }
-                    )
+                    default_reset = {
+                        "srcblk": rst_src,
+                        "srcport": rst_port,
+                        "dstblk": module_name,
+                        "dstport": reset["name"],
+                    }
+                    self.log.debug("Inferring reset: %s", default_reset)
+                    self.resets.append(default_reset)
 
     def _collect_make_args(self, include_paths):
         """Expand arguments to the make process.

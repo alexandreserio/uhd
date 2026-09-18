@@ -9,6 +9,7 @@ __USRP N-Series Devices__
 __USRP B-Series Devices__
 
 \li \subpage page_usrp_b200
+\li \subpage page_usrp_b3xx
 
 __USRP E-Series Devices__
 
@@ -36,6 +37,7 @@ __Daughterboards__
 \li \subpage page_dboards
 \li \ref page_twinrx
 \li \ref page_zbx
+\li \ref page_hbx
 \li \ref page_fbx
 
 __OctoClock__

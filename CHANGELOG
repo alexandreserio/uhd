@@ -1,19 +1,208 @@
 Change Log for Releases
 ==============================
 
-## 004.next
-
-
+## 004.011.000.000
+* Highlights / Main Changes
+  - Add support for the new USRP B310, a PCIe/Thunderbolt-based device which
+    supports 2x2 RF channels at up to 100 MHz bandwidth per channel.
+  - Add support for X410, X420 and X440 variants with locked FPGA
+  - Update underlying OE version on embedded devices to Scarthgap (5.0 LTS)
+    and Linux kernel to version 6.12.
+  - Migrated the MPM RPC transport layer from mprpc (msgpack-RPC) to gRPC/Protobuf,
+    impacting all embedded devices running MPM.
 * New Features
-  - CMake: Create UHD::uhd package for improved integration in downstream build
-    processes. The init_usrp example is used to showcase this feature.
+  - X420 and X440:
+    - The X420_X4_200, X420_CG_400, X420_X4_400 and X440_X4_200 FPGA images now
+      use fixed fabric resamplers (3x) and RFDC resamplers instead of RFDC
+      resamplers alone. This ensures repeatable phase and time offsets between
+      repeatability events on these updated FPGA images. Note that this feature
+      is currently mutually exclusive with dual rate support on X440, and it
+      increases the resource utilization. To revert to the previous image with
+      non-repeatable phase offsets, a custom image must be built.
+  - X420:
+    - Added support for the 400 MHz FPGA variants, including the X420_CG_400
+      and X420_X4_400 images.
+  - X440:
+    - Introduced a new BSP parameter (USE_FABRIC_RESAMPLERS) in the X4_200 image
+      to enable easy toggling between using fixed fabric resamplers (the new default)
+      and the previous behavior. The parameter is set to true (use fixed fabric
+      resamplers) in this image and is not available in other X440 FPGA images.
+  - X4xx: 
+    - The ref_locked sensor no longer queries the sticky bits; instead, it
+      only reports the current lock state. The ref_stable sensor is added to
+      include the sticky bits.
+  - Python:
+    - The ref_clk_calibration feature is now accessible in the Python API.
+  - Streamers:
+    - Added get_stream_info() API call to streamers, which allows reading out
+      internal information about streamer objects.
+  - RFNoC:
+    - Added support for RFNoC 2.0 control operations, including block
+      read/write, poll, and burst read/write operations.
+    - Control packet sequence number width was increased to 8 bits, which
+      improves stability in environments with high packet loss or reordering
+      (e.g., in WSL containers). Note that this is a break in the protocol version;
+      Wireshark dissectors have been updated (but old dissectors will no
+      longer work).
+    - RFNoC control packets no longer require unnecessary dummy data words,
+      improving control interface efficiency.
+    - Improve ability to control the block CHDR width (aside from the regular
+      CHDR width).
+    - Allow parallel initialization of RFNoC-based devices for faster session
+      start when using multiple USRPs in a multi_usrp or rfnoc_graph object.
+    - Wideband DDC/DUC:
+      - Updated the RFNoC DDC and DUC blocks to support bandwidths > 200 MHz.
+        With this update, users can add the DDC and DUC blocks to their custom
+        FPGA images for bandwidths up to 1600 MHz (2000 MSps).
+    - Shipping FPGA images:
+      - Added new shipping FPGA images for x420:
+        - x420_X4_400
+        - x420_CG_400
+      - Added DDC and DUC functionality for all channels to the following
+        shipping FPGA images:
+        - x410_CG_400
+        - x420_X4_400
+        - x420_CG_400
+        - x420_X4_1000
+        - x420_CG_1000
+        - x440_X4_800
+        - x440_CG_800
+        - x440_X4_1600
+        - x440_CG_1600
+        For custom designs based on one of these updated rfnoc_image_core.yml
+        files, please note that the new addition of the DDC/DUC blocks to FPGA
+        images will have an impact on how much custom logic can fit into these
+        designs. If needed the DDC/DUC blocks can be removed to revert to the
+        previous behavior.
+  - MPM-based devices can now be initialized in parallel within a MultiUSRP
+    session.
+  - GPS:
+    - Added support for UBLOX communication.
+    - Improved compatibility with GPS receivers by accepting additional
+      constellation messages and handling device-specific message timing.
+  - Embedded devices: Migrated thermal/fan sensor handling to hwmon/sysfs. This
+    requires the embedded OS to be at least Scarthgap.
+* Bug Fixes
+  - Fixed an X420 power-up issue caused by glitchy power readouts.
+  - Improved X4xx clock initialization and reference-lock handling, including
+    recovery from reference-clock glitches between UHD sessions.
+  - X4xx ADC self-calibration now honors skip_adc_selfcal during clock
+    reconfiguration.
+  - Fixed device filtering for image loading and other callers of
+    device-specific find_t implementations, including serial-based image
+    updates.
+  - Improved GPS message parsing and receive-buffer handling.
+  - Corrected the exit status reported by uhd_images_downloader on errors.
+  - RFNoC now reports the detected and expected RFNoC versions when a version
+    mismatch is encountered.
+  - Fixed `rfnoc_modtool make-yaml`; it produced an incorrect make_var entry.
+  - Many other, minor bug fixes (see commit list for details).
+* API Changes
+  - All usage of boost::optional within the library has been removed. Public APIs
+    that used boost::optional are retained, but marked as deprecated.
+  - Some logging APIs that previously used boost::posix_time are now
+    declared deprecated, and alternatives that use standard C++ constructs have
+    been introduced.
+  - MPM device initialization is serial by default. The `init_threads=N`
+    device argument enables parallel initialization.
+  - Added an option to resynchronize X4xx SPLL R-dividers after reference-lock
+    loss using reset_spll_r_divider=1 in the synchronization arguments. This
+    is intended for advanced users only.
+  - Minor DDC/DUC C++ API changes as part of the Wideband DDC/DUC update.
+* FPGA
+  - Many improvements to resource utilization for improved build success rate
+    and compilation time.
+  - Enabled usage of VHDL 2008.
+* Codebase Management
+  - Fully removed Boost.Thread, Boost.Date_Time, and Boost.Chrono dependencies
+    for libuhd. Other Boost usage has been reduced.
+  - Improved compatibility with newer compiler versions (e.g., gcc16).
+  - MPM RPC transport migrated from mprpc (msgpack-RPC) to gRPC/Protobuf.
+    The mprpc Python dependency is replaced by grpcio. On Linux, the host
+    build-time dependencies are libgrpc++-dev, libprotobuf-dev, and
+    protobuf-compiler-grpc. On Windows, there are no prebuilt distro packages,
+    so gRPC and Protobuf (including the grpc_cpp_plugin code-generation plugin)
+    must be obtained either by building from source (https://github.com/grpc/grpc)
+    or via a package manager such as vcpkg.
+  - Improved build reproducibility by removing the build-directory path from
+    embedded build information.
+* Validated OS Environments
+  (Versions for build and runtime dependencies can be determined from the
+   docker container definitions in the UHD repository at .ci/docker/...)
+  - Linux:
+    - Ubuntu: jammy (22.04), noble (24.04), resolute (26.04)
+    - Fedora: 41, 42, 43
+  - Windows: 10 22H2, 11 24H2
+  - MacOS: Sequoia (15.7)
+
+## 004.010.000.000
+* Highlights / Main Changes
+  - Support for USRP X420
+  - Addition of timed complex gain feature, which allows setting a complex gain
+    value to fix phase and amplitude of signals from radio blocks
+* New Features
+  - CMake:
+    - Create UHD::uhd package for improved integration in downstream build
+      processes. The init_usrp example is used to showcase this feature.
+    - Improved options for RFNoC OOT modules to write unit tests.
   - Add helper routines to up- and download data (reliably) from and to the
     DRAM block
   - X310: Allow daughterboards to set dboard clock rate
-  - RFNoC: Add names and descriptions for block's and module's YAML files, so
-    that other tools may read information about those in an automated fashion
+  - Improve finding of MPM-based devices by making parts of the find call
+    asynchronous and allowing to skip reachability checks.
+  - RFNoC:
+    - Added new optional feature to all Radio blocks - Timed complex gain:
+      - Allows specifying complex gain coefficients to be applied to all
+        TX and/or RX samples of a radio channel at the specified time.
+      - Enabled by default for all TX and RX channels of the radio blocks,
+        but can be disabled at FPGA build time via the `EN_COMP_GAIN_TX`
+        and `EN_COMP_GAIN_RX` parameters of the radio blocks.
+      - NOTE: For the x440_X4_400 default FPGA design provided with UHD,
+        enabling this feature for all 8 RX and TX channels necessitated
+        restricting the existing crossbar connections between the replay
+        blocks and the radio blocks. As a result, only blocks with the same
+        indices can be connected (e.g. replay0<->radio0 and replay1<->radio1
+        only) when using this pre-built USRP FPGA image.
+    - Blocks may now drive the front-panel GPIO pins on all RFNoC-capable
+      devices. New IO signatures are added, and all device BSPs have IO ports
+      for accessing the GPIOs. Device controls are updated such that the user
+      can choose the source for GPIOs dynamically in this case (i.e., the
+      radio blocks and other GPIO sources are still available). In some cases,
+      the device BSP HDL had to be significantly refactored.
+    - Add names and descriptions for block's and module's YAML files, so that
+      other tools may read information about those in an automated fashion
+    - Allow `mtu` stream argument, which overrides the MTU value that is
+      derived from the link information.
+    - Action handling is now moved to its own thread (there is one action
+      handling thread per graph). This allows actions to be handled
+      asynchronously, e.g., when triggering actions from async message handlers.
+    - Add radio_state IO signature, so that other blocks can monitor the ATR
+      state of radio blocks.
+    - All RFNoC devices can now take an `mtu` stream argument (which overrides
+      the detected link MTU) and a `force_mtu` device argument (which skips
+      automatic MTU detection and forces a fixed value). These are helpful in
+      scenarios where a specific network topology interferes with path MTU
+      discovery, and for remote streaming when the MTU for a remote stream link
+      cannot be inferred from UHD.
+    - rfnoc_modtool has improved support for generating unit tests.
+    - Add PPS IO signature for all targets
+    - Add stream command to start receiving when a transmit occurs
+    - Null source/sink: Add finite mode.
+    - Add UX1/UX2/UX4 QSFP configurations for X4xx
 * API Changes
   - meta_range_t and uhd::dict can now be initialized from initializer lists
+  - Add rfnoc_graph::get_chdr_xport_adapters()
+  - Python API now allows creating SubdevSpec from a string
+  - Some public APIs that used `boost::optional` now also work with `std::optional`
+  - Unit tests for RFNoC blocks (in-tree and out-of-tree) no longer require a
+    dummy implementation of `~make_args_t()`
+  - `uhd::cast::to_str()` was added and `uhd::cast::from_str()` was extended to
+    be a full replacement for `boost::lexical_cast`
+* Examples
+  - Overhauled many of the examples to improve documentation, as well as some
+    minor conveniences or bug fixes
+  - Added continuous streaming to tx_samples_from_file
+  - Improved gpio example.
 * Bug Fixes
   - Fix static UHD library builds
   - Fix compatibility with Boost 1.89
@@ -23,22 +212,81 @@ Change Log for Releases
       builds of X410 and X440 device bitfiles from GNU Radio)
     - Fix installation of OOT modules in Python venvs
     - Fix time alignment of first sample
+    - Unit tests in RFNoC OOT modules now preload their DLLs to ensure the
+      correct library version is loaded
+    - Fix generation of GNU Radio C++ block controllers
+    - rfnoc_modtool: Fix creation of spurious unit tests, fix package_data for
+      Python module installation
+    - rfnoc_modtool: Fix connection check for invalid ports
+    - Fix alignment of first sample coming from radio block.
+    - Fix bug in ctrlport_endpoint which could cause the software to believe
+      the associated RFNoC block's command FIFO was full when packets were lost
+    - Add parameter to skip waiting for ACKs in async messages
   - E31x: Fix GPIO control
+  - E3xx/B2xx: Fix rounding bug for RF PLL tuning
+  - B2xx: Fix image loading via b200_image_loader when multiple devices are
+    attached
+  - X410: Fix tuning when power calibration and non-default gain profiles are
+    used.
+  - Power calibration tools: Fix settings for E320, allow non-default sampling
+    rate, other minor fixes
   - FPGA
     - Fix various simulation-related bugs
+  - USRP Simulator: Update to match current UHD.
+  - multi_usrp:
+    - Improved bank name check in multi_usrp::{set,get}_gpio_attr()
+  - CMake:
+    - Allow absolute paths for install dirs in pkg-config
+    - Fix target include path for Python module
+  - USRP1: Fix converter name in property tree
+  - FPGA:
+    - Fix various simulation/testbench issues.
+    - Improve resource utilization in various places.
+  - MPM:
+    - Fix file descriptor leaks by using with/open everywhere.
+    - Fix double-free issue in rpclib.
+    - Remove tolerance for non-existing EEPROMs.
+  - Examples: Properly report errors when opening a file failed.
+  - Python: When installing into venvs, no longer force a reinstallation of
+    dependencies.
 * Dependencies changes
   - Increase minimum required versions
     - Boost to 1.71
+    - DPDK to 19.11
     - Changed minimum CMake versions for various non-UHD projects, e.g.
       firmware builds, to stay compatible with CMake 4
 * Documentation
-  - Restructured the UHD manual
+  - Restructured the UHD manual, improved chapter structure, improved getting
+    started content, added RFNoC specification.
+  - Fixed some external links
+  - Many smaller improvements (typos, duplicate entries removed, formatting,
+    etc.)
 * Codebase Management
   - Increased C++ version to 20 for UHD library, examples, and utilities
   - Removed Boost in multiple locations and replaced with standard library
     calls
-  - Fix numerous (mostly harmless) compiler warnings
+  - Fix numerous (mostly harmless) compiler and Doxygen warnings
   - Improve CMake linking instructions
+* Validated OS Environments
+  (Versions for build and runtime dependencies can be determined from the
+   docker container definitions in the UHD repository at .ci/docker/...)
+  - Linux:
+    - Ubuntu: jammy (22.04), noble (24.04), questing (25.10)
+    - Fedora: 40, 41, 42
+  - Windows: 10 22H2, 11 24H2
+  - MacOS: Sequoia (15.6)
+
+## 004.009.000.001
+Changes compared to UHD 4.9.0.0:
+* Dependency changes
+  - Support Boost 1.89.0
+  - Drop support for boost below 1.71.0
+* Fixes
+  - Fix static build of libuhd
+* Notes
+  - We suggest to only update to this version if the boost 1.89.0 compability
+    is required. Apart from the Boost build fixes, there are no other changes
+    in this UHD release.
 
 ## 004.009.000.000
 * Highlights / Main Changes
@@ -53,7 +301,7 @@ Change Log for Releases
     a valid block YAML file, the tool will now automatically call `make-yaml` to
     generate a new YAML file.
   - Added support for processing multiple samples per cycle in FFT block.
-  - LabVIEW/USRP: New repository containing example applications which 
+  - LabVIEW/USRP: New repository containing example applications which
     demonstrate how to use NI LabVIEW with USRP devices via the UHD APIs.
     (https://github.com/ni/labview-usrp-examples)
   - Improved RFNoC OOT Block support:
@@ -63,7 +311,7 @@ Change Log for Releases
       to and from Aurora capable compute nodes like FPGA Coprocessors.
   - Enhanced the UHD Windows installer to automatically install Windows
     driver packages into the OS, eliminating this manual post-installation
-    step for B-Series USB devices. 
+    step for B-Series USB devices.
 * API Changes
   - `uhd::math::gcd` and `uhd::math::lcm` are removed from the public
      headers. Use `std::gcd` and `std::lcm` instead if C++17 is available,
@@ -240,8 +488,8 @@ Change Log for Releases
     - Add device DNA feature for X310, X410, X440. This allows reading back the
       FPGA's DNA, which is a unique identifier.
   - Embedded OS for E3xx, N3xx, and X4xx devices
-    - With the switch to Yocto 4.0 (kirkstone), the SD card and eMMC images no 
-      longer pre-populate the second system partition. Refer to the device 
+    - With the switch to Yocto 4.0 (kirkstone), the SD card and eMMC images no
+      longer pre-populate the second system partition. Refer to the device
       specific "Updating Filesystems" section in the user manual for how to populate it.
       This reduces the size of compressed .sdimg filesystem images.
   - X440

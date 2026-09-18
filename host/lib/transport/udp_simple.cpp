@@ -8,6 +8,11 @@
 #include <uhd/transport/udp_simple.hpp>
 #include <uhd/utils/log.hpp>
 #include <uhdlib/transport/udp_common.hpp>
+#ifdef _WIN32
+#    include <mstcpip.h>
+#    include <winsock2.h>
+#endif
+#include <chrono>
 
 using namespace uhd::transport;
 namespace asio = boost::asio;
@@ -36,6 +41,32 @@ public:
         // create and open the socket
         _socket = socket_sptr(new asio::ip::udp::socket(_io_context));
         _socket->open(asio::ip::udp::v4());
+
+#ifdef _WIN32
+        // On Linux, ICMP "Port Unreachable" errors are silently dropped on unconnected
+        // UDP sockets and only reported on connected sockets (as ECONNREFUSED).
+        // Windows reports them as WSAECONNRESET (10054) on ALL UDP sockets by default.
+        // Replicate Linux behavior: suppress CONNRESET only for unconnected (broadcast)
+        // sockets; leave it enabled for connected sockets so errors are still reported.
+        if (!connect) {
+            DWORD connreset      = FALSE;
+            DWORD bytes_returned = 0;
+            int result           = WSAIoctl(_socket->native_handle(),
+                SIO_UDP_CONNRESET,
+                &connreset,
+                sizeof(connreset),
+                nullptr,
+                0,
+                &bytes_returned,
+                nullptr,
+                nullptr);
+            if (result != 0) {
+                UHD_LOG_ERROR("UDP",
+                    "WSAIoctl(SIO_UDP_CONNRESET) failed with return value: "
+                        << result << ", error: " << WSAGetLastError());
+            }
+        }
+#endif
 
         // allow broadcasting
         _socket->set_option(asio::socket_base::broadcast(bcast));
@@ -102,7 +133,6 @@ udp_simple::sptr udp_simple::make_broadcast(
 /***********************************************************************
  * Simple UART over UDP
  **********************************************************************/
-#include <boost/thread/thread.hpp>
 class udp_simple_uart_impl : public uhd::uart_iface
 {
 public:
@@ -122,9 +152,8 @@ public:
     std::string read_uart(double timeout) override
     {
         std::string line;
-        const boost::system_time exit_time =
-            boost::get_system_time()
-            + boost::posix_time::milliseconds(long(timeout * 1000));
+        const auto exit_time = std::chrono::steady_clock::now()
+                               + std::chrono::milliseconds(int64_t(timeout * 1000));
         do {
             // drain anything in current buffer
             while (_off < _len) {
@@ -138,8 +167,9 @@ public:
 
             // recv a new packet into the buffer
             _len = _udp->recv(asio::buffer(_buf),
-                std::max(
-                    (exit_time - boost::get_system_time()).total_milliseconds() / 1000.,
+                std::max(std::chrono::duration<double>(
+                             exit_time - std::chrono::steady_clock::now())
+                             .count(),
                     0.0));
             _off = 0;
 

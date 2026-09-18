@@ -13,6 +13,27 @@ using namespace uhd::rfnoc;
 using namespace uhd::rfnoc::chdr;
 using namespace uhd::transport;
 
+chdr_ctrl_xport::sptr chdr_ctrl_xport::make(io_service::sptr io_srv,
+    send_link_if::sptr send_link,
+    recv_link_if::sptr recv_link,
+    const chdr::chdr_packet_factory& pkt_factory,
+    sep_id_t my_epid,
+    size_t num_send_frames,
+    size_t num_recv_frames,
+    size_t send_frame_size,
+    disconnect_callback_t disconnect)
+{
+    return std::make_shared<chdr_ctrl_xport>(io_srv,
+        send_link,
+        recv_link,
+        pkt_factory,
+        my_epid,
+        num_send_frames,
+        num_recv_frames,
+        send_frame_size,
+        disconnect);
+}
+
 chdr_ctrl_xport::chdr_ctrl_xport(io_service::sptr io_srv,
     send_link_if::sptr send_link,
     recv_link_if::sptr recv_link,
@@ -20,8 +41,12 @@ chdr_ctrl_xport::chdr_ctrl_xport(io_service::sptr io_srv,
     sep_id_t my_epid,
     size_t num_send_frames,
     size_t num_recv_frames,
+    size_t send_frame_size,
     disconnect_callback_t disconnect)
-    : _my_epid(my_epid), _recv_packet(pkt_factory.make_generic()), _disconnect(disconnect)
+    : _my_epid(my_epid)
+    , _recv_packet(pkt_factory.make_generic())
+    , _send_frame_size(send_frame_size)
+    , _disconnect(disconnect)
 {
     /* Make dumb send pipe */
     send_io_if::send_callback_t send_cb = [](frame_buff::uptr buff, send_link_if* link) {

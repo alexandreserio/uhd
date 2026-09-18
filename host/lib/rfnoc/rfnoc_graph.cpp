@@ -9,18 +9,19 @@
 #include <uhd/rfnoc/defaults.hpp>
 #include <uhd/rfnoc/detail/graph.hpp>
 #include <uhd/rfnoc/mb_controller.hpp>
-#include <uhd/rfnoc/noc_block_make_args.hpp>
 #include <uhd/rfnoc/node.hpp>
 #include <uhd/rfnoc_graph.hpp>
 #include <uhdlib/rfnoc/block_container.hpp>
 #include <uhdlib/rfnoc/factory.hpp>
 #include <uhdlib/rfnoc/graph_stream_manager.hpp>
+#include <uhdlib/rfnoc/noc_block_make_args.hpp>
 #include <uhdlib/rfnoc/rfnoc_device.hpp>
 #include <uhdlib/rfnoc/rfnoc_rx_streamer.hpp>
 #include <uhdlib/rfnoc/rfnoc_tx_streamer.hpp>
 #include <uhdlib/usrp/common/io_service_mgr.hpp>
 #include <uhdlib/utils/narrow.hpp>
 #include <memory>
+#include <optional>
 
 using namespace uhd;
 using namespace uhd::rfnoc;
@@ -170,7 +171,7 @@ public:
             if (!src_static_edge_o) {
                 return false;
             }
-            graph_edge_t src_static_edge = src_static_edge_o.get();
+            graph_edge_t src_static_edge = src_static_edge_o.value();
 
             // Now see if it's already connected to the destination
             if (src_static_edge.dst_blockid == dst_blk.to_string()
@@ -198,7 +199,7 @@ public:
             if (!dst_static_edge_o) {
                 return false;
             }
-            graph_edge_t dst_static_edge = dst_static_edge_o.get();
+            graph_edge_t dst_static_edge = dst_static_edge_o.value();
 
             // If they're not statically connected, the source *must* be connected
             // to an SEP, or this route is impossible
@@ -755,9 +756,11 @@ private:
             }
             auto block_reg_iface = _gsm->get_block_register_iface(
                 ctrl_sep_addr, portno, *ctrlport_clk_iface.get(), *tb_clk_iface.get());
-            auto make_args_uptr      = std::make_unique<noc_block_base::make_args_t>();
-            make_args_uptr->noc_id   = noc_id;
-            make_args_uptr->block_id = block_id;
+            block_reg_iface->set_log_id(block_id.to_string());
+            auto make_args_uptr =
+                noc_block_base::make_args_ptr(new noc_block_base::make_args_int_t());
+            make_args_uptr->noc_id           = noc_id;
+            make_args_uptr->block_id         = block_id;
             make_args_uptr->num_input_ports  = block_info.num_inputs;
             make_args_uptr->num_output_ports = block_info.num_outputs;
             make_args_uptr->mtu =
@@ -948,11 +951,11 @@ private:
                 dst_sep_addr, src_sep_addr, false, 0.1, 0.0, false);
 
             UHD_LOGGER_DEBUG(LOG_ID)
-                << boost::format(
-                       "Data stream between EPID %d and EPID %d established "
-                       "where downstream buffer can hold %lu bytes and %u packets")
-                       % std::get<0>(strm_info).first % std::get<0>(strm_info).second
-                       % std::get<1>(strm_info).bytes % std::get<1>(strm_info).packets;
+                << "Data stream between EPID " << std::get<0>(strm_info).first
+                << " and EPID " << std::get<0>(strm_info).second
+                << " established where downstream buffer can hold "
+                << std::get<1>(strm_info).bytes << " bytes and "
+                << std::get<1>(strm_info).packets << " packets";
         }
 
         return route_info.edge_type;
@@ -1001,11 +1004,11 @@ private:
      * \throws uhd::assertion_error if the edge can't be found. So be careful!
      */
     template <typename UnaryPredicate>
-    boost::optional<graph_edge_t> _get_static_edge(UnaryPredicate&& pred)
+    std::optional<graph_edge_t> _get_static_edge(UnaryPredicate&& pred)
     {
         auto edge_it = std::find_if(_static_edges.cbegin(), _static_edges.cend(), pred);
         if (edge_it == _static_edges.cend()) {
-            return boost::none;
+            return std::nullopt;
         }
         return *edge_it;
     }
@@ -1013,7 +1016,7 @@ private:
     /*! Make sure an optional edge info is valid, or throw.
      */
     graph_edge_t _assert_edge(
-        boost::optional<graph_edge_t> edge_o, const std::string& blk_info)
+        std::optional<graph_edge_t> edge_o, const std::string& blk_info)
     {
         if (!bool(edge_o)) {
             const std::string err_msg = std::string("Cannot connect block ") + blk_info
@@ -1021,7 +1024,7 @@ private:
             UHD_LOG_ERROR(LOG_ID, err_msg);
             throw uhd::routing_error(err_msg);
         }
-        return edge_o.get();
+        return edge_o.value();
     }
 
     /**************************************************************************
@@ -1033,8 +1036,9 @@ private:
     //! Reference to the property tree
     uhd::property_tree::sptr _tree;
 
-    //! Number of motherboards, this is technically redundant but useful for
+    /*! Number of motherboards, this is technically redundant but useful for
     // easy lookups.
+    */
     size_t _num_mboards;
 
     //! Reference to the global I/O Service Manager
@@ -1062,8 +1066,9 @@ private:
     //! Stash of the client zeros for all motherboards
     std::unordered_map<size_t, detail::client_zero::sptr> _client_zeros;
 
-    //! Map a pair (motherboard index, control crossbar port) to an RFNoC block
-    // or SEP
+    /*! Map a pair (motherboard index, control crossbar port) to an RFNoC block
+     * or SEP.
+     */
     std::map<std::pair<size_t, size_t>, block_id_t> _port_block_map;
 
     //! Map SEP block ID (e.g. 0/SEP#0) onto a sep_addr_t
@@ -1075,8 +1080,9 @@ private:
     //! uptr to graph stream manager
     graph_stream_manager::uptr _gsm;
 
-    //! EPID allocator. Technically not required by the rfnoc_graph, but we'll
-    // store it here because it's such a central thing.
+    /*! EPID allocator. Technically not required by the rfnoc_graph, but we'll
+     * store it here because it's such a central thing.
+     */
     epid_allocator::sptr _epid_alloc = std::make_shared<epid_allocator>();
 
     //! Reference to a packet factory object. Gets initialized just before the GSM

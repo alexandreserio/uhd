@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.12)
 project(EXTENSION_EXAMPLE CXX)
 
 ### Configure Compiler ########################################################
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 20)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" AND ${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
     set(CMAKE_EXE_LINKER_FLAGS "-lthr ${CMAKE_EXE_LINKER_FLAGS}")
@@ -34,7 +34,6 @@ find_package(UHD 4.3.0 REQUIRED)
 # Set components here, then include UHDBoost to do the actual finding
 set(UHD_BOOST_REQUIRED_COMPONENTS
     program_options
-    system
     thread
 )
 set(UHD_BOOST_MIN_VERSION 1.71)
