@@ -1,6 +1,7 @@
 debian
 *~
-*swp
+*.swp
 *.pyc
 .DS_Store
-build*/
+host/build/*
+
